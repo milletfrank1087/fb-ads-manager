@@ -440,6 +440,23 @@ const newApprovalId = () => `appr_${Date.now().toString(36)}_${(approvalSeq += 1
 
 // Resolve a write target strictly (write tools must hit the RIGHT entity). Returns the snapshot
 // entity object too, so the proposal can show current status/budget.
+// Hard guard: is this entity name covered by a campaign the operator flagged SACRED? (Defense in
+// depth beyond the prompt — a sacred campaign must never be paused/budget-changed/duplicated-off.)
+// Matches by name substring either direction so "GBM Mariana - Portugal" covers its ad sets too.
+function sacredHit(entityName) {
+  const n = String(entityName || '').toLowerCase().trim();
+  if (!n) return null;
+  let profile = null;
+  try { profile = JSON.parse(store.getSetting('advisor_profile') || 'null'); } catch { profile = null; }
+  const camps = profile && Array.isArray(profile.campaigns) ? profile.campaigns : [];
+  for (const c of camps) {
+    if (!c || !c.sacred || !c.name) continue;
+    const cn = String(c.name).toLowerCase().trim();
+    if (cn && (n.includes(cn) || cn.includes(n))) return c.name;
+  }
+  return null;
+}
+
 function resolveWriteTarget(level, name) {
   const last = getLastAnalysis();
   if (!last) return { error: 'no_analysis', message: 'Run an analysis first.' };
@@ -458,6 +475,8 @@ function proposePause(args, toActive) {
   const r = resolveWriteTarget(level, args.name);
   if (r.error) return { ok: false, error: r.error, message: r.message };
   const e = r.entity;
+  const sacred = sacredHit(e.name);
+  if (sacred && !toActive) return { ok: false, error: 'sacred', message: `"${e.name}" is covered by your SACRED campaign "${sacred}" — I won't propose pausing it. Suggest a non-destructive move (e.g. duplicate to test) instead.` };
   const cur = e.status || 'UNKNOWN';
   const want = toActive ? 'ACTIVE' : 'PAUSED';
   if (cur === want) return { ok: false, error: 'no_change', message: `${e.name} is already ${want}.` };
@@ -484,6 +503,8 @@ function proposeSetBudget(args) {
   const r = resolveWriteTarget(level, args.name);
   if (r.error) return { ok: false, error: r.error, message: r.message };
   const e = r.entity;
+  const sacredB = sacredHit(e.name);
+  if (sacredB) return { ok: false, error: 'sacred', message: `"${e.name}" is covered by your SACRED campaign "${sacredB}" — I won't change its budget. If you truly want to scale it, do it manually or unmark it as sacred.` };
   if (level === 'campaign' && e.isCBO === false) {
     return { ok: false, error: 'abo_campaign', message: `"${e.name}" is an ABO campaign — budget lives on its ad sets. Propose set_budget on the AD SET instead.` };
   }
@@ -580,7 +601,17 @@ const PROPOSERS = {
 
 // ---------- Tier 2 EXECUTION (only after operator approval; gated) ----------
 
-export function advisorWritesEnabled() { return config.allowAdvisorWrites === true; }
+// Advisor writes are armed if EITHER the env flag is set (server-level) OR the operator armed them
+// at runtime from the UI (persisted in app_settings). Either way, each individual action STILL
+// requires explicit per-action approval — this only controls whether an approval executes vs dry-runs.
+export function advisorWritesEnabled() {
+  if (config.allowAdvisorWrites === true) return true;
+  try { return store.getSetting('advisor_writes_armed', '0') === '1'; } catch { return false; }
+}
+
+export function setAdvisorWritesArmed(on) {
+  try { store.setSetting('advisor_writes_armed', on ? '1' : '0'); return true; } catch { return false; }
+}
 
 export function isWriteTool(name) { return WRITE_TOOLS.has(name); }
 
@@ -588,8 +619,8 @@ export function isWriteTool(name) { return WRITE_TOOLS.has(name); }
 // runs through adManager (which enforces allowAdManagement + the budget rate guard + audit log).
 export async function executeStrategyWrite(name, args = {}) {
   if (!WRITE_TOOLS.has(name)) return { ok: false, error: 'not_a_write_tool', message: `${name} is not an approvable write.` };
-  if (!config.allowAdvisorWrites) {
-    return { ok: false, error: 'advisor_writes_disabled', message: 'Advisor writes are disabled. Set FB_ALLOW_ADVISOR_WRITES=1 and restart to let approvals execute. (Nothing was sent to Meta.)' };
+  if (!advisorWritesEnabled()) {
+    return { ok: false, error: 'advisor_writes_disabled', message: 'Advisor writes are disarmed. Flip "Live actions" on in the advisor (or set FB_ALLOW_ADVISOR_WRITES=1) to let approvals execute. (Nothing was sent to Meta.)' };
   }
   // Comment moderation runs through the comments module (which enforces FB_ALLOW_COMMENT_MODERATION
   // + audit log), not adManager.
@@ -652,13 +683,27 @@ export function buildAdvisorMemory() {
   try { profile = JSON.parse(store.getSetting('advisor_profile') || 'null'); } catch { profile = null; }
   if (profile && typeof profile === 'object') {
     const b = [];
-    if (profile.targetCpa) b.push(`Target CPA ≈ ${profile.targetCpa}`);
-    if (profile.targetRoas) b.push(`Target ROAS ≈ ${profile.targetRoas}`);
     if (profile.riskTolerance) b.push(`Risk tolerance: ${profile.riskTolerance}`);
-    if (Array.isArray(profile.sacred) && profile.sacred.length) b.push(`NEVER touch (sacred winners): ${profile.sacred.join(', ')}`);
     if (profile.brandVoice) b.push(`Brand voice for replies: ${String(profile.brandVoice).slice(0, 400)}`);
-    if (profile.notes) b.push(`Operator notes: ${String(profile.notes).slice(0, 600)}`);
-    if (b.length) parts.push('OPERATOR BRIEF:\n- ' + b.join('\n- '));
+    if (profile.notes) b.push(`Operator notes (account-wide): ${String(profile.notes).slice(0, 600)}`);
+    if (b.length) parts.push('OPERATOR BRIEF (account-wide):\n- ' + b.join('\n- '));
+
+    // Per-campaign goals — each beneficiary campaign has its OWN target/goal, so judge each against
+    // ITS goal, not one global number. Sacred campaigns are never to be paused/changed (words only).
+    const camps = Array.isArray(profile.campaigns) ? profile.campaigns.filter((c) => c && c.name) : [];
+    if (camps.length) {
+      const goalLabel = { maximize_donations: 'maximize donations (scale)', hold_cpa: 'hold CPA', hold_roas: 'hold ROAS', awareness: 'awareness/reach', maintain: 'maintain (no changes)' };
+      const lines = camps.map((c) => {
+        const bits = [];
+        if (c.goal) bits.push(goalLabel[c.goal] || c.goal);
+        if (c.targetCpa) bits.push(`target CPA ${c.targetCpa}`);
+        if (c.targetRoas) bits.push(`target ROAS ${c.targetRoas}`);
+        if (c.sacred) bits.push('SACRED — never pause/edit, words only');
+        if (c.notes) bits.push(String(c.notes).slice(0, 200));
+        return `- "${c.name}": ${bits.length ? bits.join(' · ') : 'no specific goal set'}`;
+      });
+      parts.push('PER-CAMPAIGN GOALS (match by name; judge each campaign against ITS OWN goal):\n' + lines.join('\n'));
+    }
   }
 
   try {

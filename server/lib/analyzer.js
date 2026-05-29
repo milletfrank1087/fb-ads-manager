@@ -132,7 +132,7 @@ async function callOpenRouterStep(model, messages, { tools, maxTokens = 1100, te
 
 // Streaming step. Forwards content tokens via onDelta; accumulates tool_call fragments (which arrive
 // as indexed deltas instead of content). Returns { text, toolCalls:[{id,name,argsStr}], finishReason }.
-async function streamOpenRouterStep(model, messages, { tools, onDelta, maxTokens = 1100, temperature = 0.35 } = {}) {
+async function streamOpenRouterStep(model, messages, { tools, onDelta, onToolStart, maxTokens = 1100, temperature = 0.35 } = {}) {
   if (!config.openrouterApiKey) throw new Error('OPENROUTER_API_KEY missing — AI disabled.');
   const body = { model, messages, temperature, max_tokens: maxTokens, stream: true };
   if (tools && tools.length) { body.tools = tools; body.tool_choice = 'auto'; }
@@ -168,11 +168,14 @@ async function streamOpenRouterStep(model, messages, { tools, onDelta, maxTokens
         if (delta.content) { full += delta.content; if (onDelta) onDelta(delta.content); }
         for (const call of delta.tool_calls || []) {
           const i = call.index ?? 0;
-          const cur = tc.get(i) || { id: '', name: '', argsStr: '' };
+          const cur = tc.get(i) || { id: '', name: '', argsStr: '', started: false };
           if (call.id) cur.id = call.id;
           if (call.function?.name) cur.name = call.function.name;
           if (call.function?.arguments) cur.argsStr += call.function.arguments;
           tc.set(i, cur);
+          // Fire the live "running" event the MOMENT the model commits to a tool name (Cursor-style),
+          // not after the whole turn finishes — otherwise the operator just stares at a dead spinner.
+          if (cur.name && !cur.started && onToolStart) { cur.started = true; onToolStart(cur.name, i); }
         }
       } catch { /* partial JSON across chunks — next read completes it */ }
     }
@@ -192,6 +195,16 @@ async function runChatAgent({ messages, tools, runTool, onDelta, onTool, onAppro
   let contentStarted = false; // once answer tokens stream, we cannot safely switch models
   let modelUsed = models[0];
   const wrappedDelta = streaming ? (d) => { contentStarted = true; onDelta(d); } : undefined;
+  // Emitted live (mid-stream) the instant the model names a read tool, so the UI shows the pulsing
+  // "Reading comments…" chip immediately instead of a blank spinner. Write/approval tools are skipped
+  // here (they surface only as an approval card); their starts are tracked so the exec loop doesn't
+  // re-emit. Keyed by streaming tool index.
+  const streamedStarts = new Set();
+  const wrappedToolStart = streaming ? (name, i) => {
+    if (typeof isApprovalTool === 'function' && isApprovalTool(name)) return;
+    streamedStarts.add(i);
+    if (onTool) onTool({ phase: 'start', name, args: {} });
+  } : undefined;
 
   const step = async (msgs, includeTools) => {
     let lastErr;
@@ -199,7 +212,7 @@ async function runChatAgent({ messages, tools, runTool, onDelta, onTool, onAppro
       try {
         const opts = { tools: includeTools ? tools : undefined, maxTokens, temperature };
         const res = streaming
-          ? await streamOpenRouterStep(models[mi], msgs, { ...opts, onDelta: wrappedDelta })
+          ? await streamOpenRouterStep(models[mi], msgs, { ...opts, onDelta: wrappedDelta, onToolStart: includeTools ? wrappedToolStart : undefined })
           : await callOpenRouterStep(models[mi], msgs, opts);
         modelUsed = models[mi];
         return res;
@@ -222,13 +235,16 @@ async function runChatAgent({ messages, tools, runTool, onDelta, onTool, onAppro
         tool_calls: res.toolCalls.map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.argsStr || '{}' } })),
       });
       const approvals = [];
+      let callIdx = -1;
       for (const call of res.toolCalls) {
+        callIdx += 1;
         let args = {};
         try { args = call.argsStr ? JSON.parse(call.argsStr) : {}; } catch { args = {}; }
         const approvalTool = typeof isApprovalTool === 'function' && isApprovalTool(call.name);
         // Read tools show a live "running" chip; write tools surface only as an approval card
         // (success) or as the AI's own explanation (failed proposal) — never a chip.
-        if (!approvalTool && onTool) onTool({ phase: 'start', name: call.name, args });
+        // When streaming, the start already fired mid-stream (streamedStarts) — don't double-emit.
+        if (!approvalTool && onTool && !streamedStarts.has(callIdx)) onTool({ phase: 'start', name: call.name, args });
         const { result, content, approval } = await runTool(call.name, args);
         toolsUsed.push({ name: call.name, args, ok: result?.ok !== false, approval: !!approval });
         if (approval) {

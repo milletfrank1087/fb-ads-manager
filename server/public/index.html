@@ -1481,41 +1481,84 @@
                     <span class="text-[10.5px] text-meta-gray-400 truncate">— targets, sacred campaigns, brand voice (the advisor remembers this)</span>
                     <svg class="w-3.5 h-3.5 text-meta-gray-300 ml-auto flex-shrink-0 transition-transform" :class="strategy.briefOpen ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                   </button>
-                  <div x-show="strategy.briefOpen" x-cloak class="px-2.5 pb-2.5 pt-1 border-t border-gray-200 space-y-2">
-                    <div class="grid grid-cols-3 gap-2">
-                      <label class="block">
-                        <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Target CPA</span>
-                        <input x-model="strategy.profile.targetCpa" type="text" placeholder="e.g. $5" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="Your acceptable cost per donation/purchase. The advisor aims at this when judging kill/scale.">
-                      </label>
-                      <label class="block">
-                        <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Target ROAS</span>
-                        <input x-model="strategy.profile.targetRoas" type="text" placeholder="e.g. 1.5" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="Return on ad spend you want to hold while scaling.">
-                      </label>
-                      <label class="block">
-                        <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Risk tolerance</span>
-                        <select x-model="strategy.profile.riskTolerance" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="Conservative = words-only / duplicates over live edits. Aggressive = bolder scaling proposals.">
-                          <option value="conservative">Conservative</option>
-                          <option value="balanced">Balanced</option>
-                          <option value="aggressive">Aggressive</option>
-                        </select>
-                      </label>
+                  <div x-show="strategy.briefOpen" x-cloak class="px-2.5 pb-2.5 pt-1 border-t border-gray-200 space-y-3">
+                    <!-- Account-level (genuinely global) -->
+                    <div>
+                      <div class="text-[10px] uppercase tracking-wide text-meta-gray-400 font-semibold mb-1">Account-wide</div>
+                      <div class="grid grid-cols-1 gap-2">
+                        <label class="block">
+                          <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Risk tolerance</span>
+                          <select x-model="strategy.profile.riskTolerance" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="Conservative = words-only / duplicates over live edits. Aggressive = bolder scaling proposals.">
+                            <option value="conservative">Conservative — prefer words & paused duplicates</option>
+                            <option value="balanced">Balanced</option>
+                            <option value="aggressive">Aggressive — bolder scaling proposals</option>
+                          </select>
+                        </label>
+                        <label class="block">
+                          <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Brand voice (used when drafting comment replies)</span>
+                          <textarea x-model="strategy.profile.brandVoice" rows="2" placeholder="Warm, sincere, factual. Thank donors. Never over-promise outcomes. Reply in the commenter's language." class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="How replies should sound. The advisor writes comment replies in this voice."></textarea>
+                        </label>
+                        <label class="block">
+                          <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Notes / standing instructions</span>
+                          <textarea x-model="strategy.profile.notes" rows="2" placeholder="e.g. one pixel shared across beneficiaries; donations vary in size; prefer prospecting over retargeting." class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5"></textarea>
+                        </label>
+                      </div>
                     </div>
-                    <label class="block">
-                      <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Sacred campaigns — never touch (comma-separated)</span>
-                      <input x-model="strategy.profile.sacred" type="text" placeholder="e.g. Portugal - Mariana, Greece winner" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="The advisor will never propose pausing or changing the budget of a campaign/ad set whose name contains any of these.">
-                    </label>
-                    <label class="block">
-                      <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Brand voice (used when drafting comment replies)</span>
-                      <textarea x-model="strategy.profile.brandVoice" rows="2" placeholder="Warm, sincere, factual. Thank donors. Never over-promise outcomes. Reply in the commenter's language." class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="How replies should sound. The advisor writes comment replies in this voice."></textarea>
-                    </label>
-                    <label class="block">
-                      <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Notes / standing instructions</span>
-                      <textarea x-model="strategy.profile.notes" rows="2" placeholder="Anything the advisor should always keep in mind (e.g. one pixel shared across beneficiaries; donations vary in size; prefer prospecting over retargeting)." class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5"></textarea>
-                    </label>
-                    <div class="flex items-center gap-2">
+                    <!-- Per-campaign goals (each beneficiary differs) -->
+                    <div>
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-[10px] uppercase tracking-wide text-meta-gray-400 font-semibold">Per-campaign goals</span>
+                        <span class="text-[10px] text-meta-gray-400">— each campaign has its own target; the advisor judges each against its own goal</span>
+                      </div>
+                      <div class="space-y-2">
+                        <template x-for="(cg, ci) in strategy.profile.campaigns" :key="ci">
+                          <div class="border border-gray-200 rounded-lg p-2 bg-white space-y-1.5">
+                            <div class="flex items-center gap-2">
+                              <input x-model="cg.name" list="advisor-campaign-list" type="text" placeholder="Campaign name (or part of it)" class="flex-1 text-[12px] border border-gray-200 rounded px-2 py-1">
+                              <label class="flex items-center gap-1 text-[11px] text-meta-gray-600 whitespace-nowrap" title="Sacred = never propose pausing or changing its budget (words only). Duplicating to test is still allowed.">
+                                <input type="checkbox" x-model="cg.sacred" class="rounded"> sacred
+                              </label>
+                              <button @click="removeCampaignGoal(ci)" type="button" class="text-meta-gray-300 hover:text-red-500" title="Remove">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                              </button>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2">
+                              <select x-model="cg.goal" class="text-[12px] border border-gray-200 rounded px-1.5 py-1" title="What success looks like for THIS campaign.">
+                                <option value="">Goal…</option>
+                                <option value="maximize_donations">Maximize donations</option>
+                                <option value="hold_cpa">Hold CPA</option>
+                                <option value="hold_roas">Hold ROAS</option>
+                                <option value="awareness">Awareness/reach</option>
+                                <option value="maintain">Maintain (no changes)</option>
+                              </select>
+                              <input x-model="cg.targetCpa" type="text" placeholder="Target CPA" class="text-[12px] border border-gray-200 rounded px-2 py-1">
+                              <input x-model="cg.targetRoas" type="text" placeholder="Target ROAS" class="text-[12px] border border-gray-200 rounded px-2 py-1">
+                            </div>
+                            <input x-model="cg.notes" type="text" placeholder="Notes for this campaign (optional)" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1">
+                          </div>
+                        </template>
+                        <datalist id="advisor-campaign-list">
+                          <template x-for="(n, ni) in snapshotCampaignNames" :key="ni"><option :value="n"></option></template>
+                        </datalist>
+                        <button @click="addCampaignGoal()" type="button" class="text-[11px] text-indigo-600 border border-indigo-200 bg-indigo-50/60 hover:bg-indigo-100 rounded-lg px-2.5 py-1">+ Add campaign goal</button>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-2 pt-1 border-t border-gray-100">
                       <button @click="saveProfile()" :disabled="strategy.briefSaving" type="button" class="text-[12px] font-medium px-3 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50" x-text="strategy.briefSaving ? 'Saving…' : 'Save brief'"></button>
                       <span x-show="strategy.briefSaved" x-cloak class="text-[11px] text-emerald-600">Saved ✓ — applied to the next message</span>
                       <span class="ml-auto text-[10px] text-meta-gray-400">Stored locally; injected into every chat as memory.</span>
+                    </div>
+                    <!-- Live actions arm switch -->
+                    <div class="flex items-center gap-2 pt-2 border-t border-gray-100">
+                      <button @click="toggleArm()" :disabled="strategy.armBusy || strategy.envForced" type="button"
+                              class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-60"
+                              :class="strategy.armed ? 'bg-red-500' : 'bg-gray-300'" :title="strategy.envForced ? 'Forced on by FB_ALLOW_ADVISOR_WRITES' : 'Toggle whether approved actions actually execute on Meta'">
+                        <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform" :class="strategy.armed ? 'translate-x-4' : 'translate-x-0.5'"></span>
+                      </button>
+                      <div class="text-[11px]">
+                        <span class="font-medium" :class="strategy.armed ? 'text-red-600' : 'text-meta-gray-600'" x-text="strategy.armed ? 'Live actions ON — approvals execute on Meta' : 'Live actions OFF — approvals are safe dry-runs'"></span>
+                        <span x-show="strategy.envForced" class="text-meta-gray-400"> (forced on by env)</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1615,7 +1658,7 @@
                                   </template>
                                   <div x-show="a.reason" class="text-meta-gray-600"><span class="text-meta-gray-400">Why:</span> <span x-text="a.reason"></span></div>
                                   <div x-show="a.warning" class="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-2 py-1 mt-1" x-text="a.warning"></div>
-                                  <div x-show="!a.armed && a.status==='pending'" class="text-[11px] text-meta-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1 mt-1">Advisor writes are <b>off</b> — approving runs a safe dry-run (nothing is sent to Meta). Set <code class="text-[10px]">FB_ALLOW_ADVISOR_WRITES=1</code> and restart to arm.</div>
+                                  <div x-show="!strategy.armed && a.status==='pending'" class="text-[11px] text-meta-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1 mt-1">Live actions are <b>off</b> — approving runs a safe dry-run (nothing is sent to Meta). Flip <b>Live actions ON</b> in the brief above to make approvals execute.</div>
                                 </div>
                                 <!-- action bar / receipt -->
                                 <div class="px-3 py-2 border-t border-gray-100 bg-gray-50/60">
@@ -1624,7 +1667,7 @@
                                       <button @click="approveAction(i, ai)" :disabled="strategy.chat.loading" type="button"
                                               class="text-[12px] font-medium px-3 py-1 rounded-lg text-white disabled:opacity-50"
                                               :class="a.risk==='destructive' ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'"
-                                              x-text="a.armed ? 'Approve & apply' : 'Approve (dry-run)'"></button>
+                                              x-text="strategy.armed ? 'Approve & apply' : 'Approve (dry-run)'"></button>
                                       <button @click="rejectAction(i, ai)" :disabled="strategy.chat.loading" type="button"
                                               class="text-[12px] font-medium px-3 py-1 rounded-lg border border-gray-300 text-meta-gray-600 hover:bg-gray-100 disabled:opacity-50">Reject</button>
                                       <span class="ml-auto text-[10px] text-meta-gray-400">You approve — the AI never applies on its own.</span>

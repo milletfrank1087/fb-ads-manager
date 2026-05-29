@@ -257,7 +257,10 @@ function dashboard() {
       briefOpen: false,
       briefSaving: false,
       briefSaved: false,
-      profile: { targetCpa: '', targetRoas: '', riskTolerance: 'balanced', sacred: '', brandVoice: '', notes: '' },
+      profile: { riskTolerance: 'balanced', brandVoice: '', notes: '', campaigns: [] },
+      armed: false,
+      envForced: false,
+      armBusy: false,
     },
     strategyWindows: [
       { id: 'last_7d', label: 'Last 7 days' },
@@ -1222,19 +1225,23 @@ function dashboard() {
       c.input = q;
       this.sendChat();
     },
-    // Tier A: load/save the standing operator brief the advisor honors every turn.
+    // Tier A: load/save the standing operator brief (account-level + per-campaign goals).
     async loadProfile() {
       try {
         const r = await fetch('/api/strategy/profile');
         const data = await r.json().catch(() => ({}));
-        if (data.ok && data.profile) {
-          const p = data.profile;
+        if (data.ok) {
+          const p = data.profile || {};
           this.strategy.profile = {
-            targetCpa: p.targetCpa || '', targetRoas: p.targetRoas || '',
             riskTolerance: p.riskTolerance || 'balanced',
-            sacred: Array.isArray(p.sacred) ? p.sacred.join(', ') : (p.sacred || ''),
             brandVoice: p.brandVoice || '', notes: p.notes || '',
+            campaigns: Array.isArray(p.campaigns) ? p.campaigns.map((c) => ({
+              name: c.name || '', goal: c.goal || '', targetCpa: c.targetCpa || '',
+              targetRoas: c.targetRoas || '', sacred: !!c.sacred, notes: c.notes || '',
+            })) : [],
           };
+          this.strategy.armed = data.armed === true;
+          this.strategy.envForced = data.envForced === true;
         }
       } catch (e) { /* non-fatal */ }
     },
@@ -1246,8 +1253,8 @@ function dashboard() {
         const r = await fetch('/api/strategy/profile', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            targetCpa: p.targetCpa, targetRoas: p.targetRoas, riskTolerance: p.riskTolerance,
-            sacred: p.sacred, brandVoice: p.brandVoice, notes: p.notes,
+            riskTolerance: p.riskTolerance, brandVoice: p.brandVoice, notes: p.notes,
+            campaigns: (p.campaigns || []).filter((c) => (c.name || '').trim()),
           }),
         });
         const data = await r.json().catch(() => ({}));
@@ -1255,6 +1262,32 @@ function dashboard() {
         else { s.chat.error = data.message || 'Could not save brief'; }
       } catch (e) { s.chat.error = String(e); }
       finally { s.briefSaving = false; }
+    },
+    addCampaignGoal(name = '') {
+      this.strategy.profile.campaigns.push({ name, goal: '', targetCpa: '', targetRoas: '', sacred: false, notes: '' });
+    },
+    removeCampaignGoal(i) { this.strategy.profile.campaigns.splice(i, 1); },
+    // Campaign names from the loaded snapshot, minus ones already in the brief (for the picker).
+    get snapshotCampaignNames() {
+      const used = new Set((this.strategy.profile.campaigns || []).map((c) => (c.name || '').trim()));
+      return ((this.strategy.data && this.strategy.data.campaigns) || [])
+        .map((c) => c.name).filter((n) => n && !used.has(n));
+    },
+    // Arm/disarm real execution at runtime (per-action approval still required).
+    async toggleArm() {
+      const s = this.strategy;
+      if (s.envForced || s.armBusy) return;
+      s.armBusy = true;
+      const next = !s.armed;
+      try {
+        const r = await fetch('/api/strategy/arm', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ armed: next }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (data.ok) { s.armed = data.armed === true; }
+      } catch (e) { s.chat.error = String(e); }
+      finally { s.armBusy = false; }
     },
     toolLabel(name, args) {
       const verbs = {
@@ -1291,27 +1324,26 @@ function dashboard() {
       const m = c.messages[mi]; if (!m || !m.approvals) return;
       const a = m.approvals[ai]; if (!a || a.status !== 'pending' || c.loading) return;
       a.status = 'approving';
+      a.decidedOutcome = null;
       try {
         const r = await fetch('/api/strategy/tool/execute', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: a.tool, args: a.args, sessionId: c.sessionId, decision: 'approve' }),
         });
         const data = await r.json().catch(() => ({}));
-        if (data.ok) { a.status = 'applied'; a.resultMsg = 'Applied to Meta'; }
-        else if (data.error === 'advisor_writes_disabled') { a.status = 'dryrun'; a.resultMsg = 'Writes disabled — nothing sent to Meta'; }
-        else { a.status = 'failed'; a.resultMsg = (data.result && data.result.message) || data.message || data.error || 'Failed'; }
-      } catch (e) { a.status = 'failed'; a.resultMsg = String(e); }
+        if (data.ok) { a.status = 'applied'; a.resultMsg = 'Applied to Meta'; a.decidedOutcome = `"${a.summary}" was APPLIED successfully`; }
+        else if (data.error === 'advisor_writes_disabled') { a.status = 'dryrun'; a.resultMsg = 'Live actions are off — nothing sent to Meta'; a.decidedOutcome = `"${a.summary}" was approved but Live actions are OFF, so nothing was sent to Meta (dry-run)`; }
+        else { a.status = 'failed'; a.resultMsg = (data.result && data.result.message) || data.message || data.error || 'Failed'; a.decidedOutcome = `"${a.summary}" did NOT apply (${a.resultMsg})`; }
+      } catch (e) { a.status = 'failed'; a.resultMsg = String(e); a.decidedOutcome = `"${a.summary}" failed (${String(e)})`; }
       this.$nextTick(() => this.scrollChatBottom());
-      const outcome = a.status === 'applied' ? 'was APPLIED successfully'
-        : (a.status === 'dryrun' ? 'was approved, but advisor writes are OFF so nothing was sent to Meta (dry-run)'
-          : `did NOT apply (${a.resultMsg || 'failed'})`);
-      await this.sendChat(`[Operator approved] "${a.summary}" — it ${outcome}. Briefly confirm what changed (or didn't), and tell me what to watch next. Do not re-propose it.`);
+      await this.continueAfterApprovals(mi);
     },
     async rejectAction(mi, ai) {
       const c = this.strategy.chat;
       const m = c.messages[mi]; const a = m && m.approvals && m.approvals[ai];
       if (!a || a.status !== 'pending' || c.loading) return;
       a.status = 'rejected';
+      a.decidedOutcome = `"${a.summary}" was REJECTED — do not take that action`;
       try {
         await fetch('/api/strategy/tool/execute', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1319,7 +1351,22 @@ function dashboard() {
         });
       } catch {}
       this.$nextTick(() => this.scrollChatBottom());
-      await this.sendChat(`[Operator rejected] "${a.summary}". Don't take that action. Suggest a safer or different next step instead.`);
+      await this.continueAfterApprovals(mi);
+    },
+    // Only resume the AI once EVERY card in this message is decided, then send ONE combined turn —
+    // otherwise rejecting card #1 makes the AI reply while card #2 is still waiting on the operator.
+    async continueAfterApprovals(mi) {
+      const c = this.strategy.chat;
+      const m = c.messages[mi]; if (!m || !m.approvals) return;
+      if (m.approvals.some((x) => x.status === 'pending' || x.status === 'approving')) return; // still waiting
+      if (m.followupSent) return; // guard against double-continue
+      m.followupSent = true;
+      const decisions = m.approvals.map((x) => x.decidedOutcome).filter(Boolean);
+      if (!decisions.length) return;
+      const body = decisions.length === 1
+        ? `[Operator decision] ${decisions[0]}. Briefly confirm what changed (or didn't) and what to watch next. Do not re-propose any rejected action.`
+        : `[Operator decisions on ${decisions.length} proposals]\n- ${decisions.join('\n- ')}\nBriefly confirm the net result and what to watch next. Do not re-propose any rejected action.`;
+      await this.sendChat(body);
     },
     renderMd(text) {
       const esc = String(text || '')
