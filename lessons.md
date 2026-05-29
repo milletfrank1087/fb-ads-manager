@@ -23,6 +23,15 @@ Sprint to make the advisor "better than SOTA": feed it the best community (non-M
 - **Per-campaign `wow`** (last-7d vs prior-7d cpa/roas/conv) attached to every campaign decision so the AI can cite the trend ("Portugal CPA +58% WoW") instead of just a point estimate.
 - **UX:** confidence legend (high/medium/low/insufficient + σ), copy-briefing button, early-saturation + concentration cards, 7d CPM column, geo/device tables. All verified in-browser, no console errors (only the benign Tailwind-CDN notice).
 
+### Sprint 2 additions (same day)
+
+- **Digest truncation was silently gutting the AI (critical fix).** The decision digest hit 26k chars but the briefing prompt slices at a char budget, and `decisions`/`concentration`/`dayparting` were serialized AFTER the verbose `segments` block → the AI was building the daily briefing WITHOUT the per-entity decisions, falling back to generic CAPI advice. Fix: (1) reorder the digest so decision-critical fields serialize FIRST and `segments` LAST, (2) cap country to top-15 by spend (was 45), (3) raise the slice to 28k. Digest dropped to ~20k; the briefing immediately started naming specific entities ("refresh Serafina/Portugal", "watch Portugal's degrading trend"). **Lesson: when you truncate a JSON prompt, key order = priority order; put the payload you can't afford to lose first.**
+- **Gender/age ROLLUPS surface real patterns that per-cell analysis hides.** Individual age×gender cells (29-45 conv) have CIs too wide to clear the baseline → all "similar". But aggregating to gender (Male = 169 conv) gives a HIGH-confidence "worse" verdict ($6.74 vs $5.67 account). This is the rigorous way to answer the user's "is male 45-54 underperforming?" — pool the sample, don't react to noisy single cells. Added `segments.gender` + `segments.age` and fed them to targeting decisions (gender/age ARE valid within-campaign levers; country is NOT — it's per-campaign here).
+- **Scale-up safety gate:** a 3-day winning streak still gets downgraded to HOLD when WoW ROAS ≤ −20% or CPA ≥ +25%. Recent-days momentum and the weekly trend genuinely disagree (Portugal: 3-day winner but −33% WoW ROAS); for SCALING the weekly trend must win. Caught a real would-be mistake.
+- **Dayparting in the daily briefing:** reused the strategist's volume-gated weekday/hour patterns → "Sat best (ROAS 6.85), Wed worst — gently weight budget". Framed as a lean, never a hard on/off schedule (starves learning at low volume).
+- **Frequency<1.5 = fresh-audience headroom**, not a problem: lower ROAS there is normal top-of-funnel prospecting. Surfaced as a "headroom to scale" badge + note instead of a fatigue warning.
+- **Robustness:** `buildDecisionDigest` ctx now has array/object defaults; analyze verified across last_7d / last_30d / last_90d (short windows degrade `today.reliable` to false rather than crashing). Narrative + briefing endpoints both healthy; Full Analysis tab unaffected.
+
 ---
 
 ## 2026-05-29 Strategy advisor (suggest-only performance AI)
