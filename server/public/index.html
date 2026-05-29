@@ -1148,9 +1148,10 @@
 
                   <div class="space-y-4">
                     <div class="bg-white rounded-lg border border-gray-200 p-4" title="Net New Reach = share of this month's reach that is brand-new people (not reached last month). High = fresh audience; low + high frequency = saturation, refresh creative or widen targeting.">
-                      <div class="flex items-center gap-2">
+                      <div class="flex items-center gap-2 flex-wrap">
                         <span class="text-sm font-semibold">Audience saturation</span>
                         <span class="text-[10px] px-1.5 py-0.5 rounded border" :class="verdictClass(d.saturation.verdict)" x-show="d.saturation.reliable" x-text="d.saturation.verdict"></span>
+                        <span x-show="d.saturation.freshHeadroom" class="text-[10px] px-1.5 py-0.5 rounded border bg-green-50 text-green-700 border-green-200" title="Frequency < 1.5 — you're still reaching mostly new people, so there's room to scale.">headroom to scale</span>
                       </div>
                       <template x-if="d.saturation.reliable">
                         <div class="mt-1">

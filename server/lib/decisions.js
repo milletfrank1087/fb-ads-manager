@@ -179,11 +179,16 @@ function buildSaturation(reach) {
   if (nnrPct != null && nnrPct < 40) verdict = 'saturating';
   else if (nnrPct != null && nnrPct < 60) verdict = 'watch';
   if (Number.isFinite(freq) && freq >= 4) verdict = 'saturating';
+  // Playbook nuance: frequency < 1.5 means you're still mostly reaching NEW people — there is real
+  // headroom to scale, and lower ROAS here is expected/acceptable (it's top-of-funnel prospecting).
+  const freshHeadroom = Number.isFinite(freq) && freq < 1.5 && verdict === 'healthy';
   return {
     reliable: true, reachThis30: this30, reachPrior30: prior30, reachCombined60: comb60,
-    netNewReachPct: nnrPct, frequency: freq, verdict,
+    netNewReachPct: nnrPct, frequency: freq, verdict, freshHeadroom,
     note: verdict === 'healthy'
-      ? `${nnrPct}% of this month's reach is brand-new people (freq ${freq}). Plenty of fresh audience — saturation is not the bottleneck.`
+      ? (freshHeadroom
+        ? `${nnrPct}% of this month's reach is brand-new people and frequency is only ${freq} (<1.5). You're still in fresh top-of-funnel territory — there's clear headroom to scale, and a slightly lower ROAS here is normal prospecting, not a problem.`
+        : `${nnrPct}% of this month's reach is brand-new people (freq ${freq}). Plenty of fresh audience — saturation is not the bottleneck.`)
       : verdict === 'watch'
         ? `Only ${nnrPct}% of reach is new people (freq ${freq}). Audience is starting to repeat — watch frequency and refresh creative soon.`
         : `Just ${nnrPct}% net-new reach with frequency ${freq}. The same people are seeing ads repeatedly — refresh creative or widen the audience before CPA climbs.`,
