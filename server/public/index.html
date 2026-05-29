@@ -920,7 +920,8 @@
 
                 <!-- concentration risk -->
                 <template x-if="d.concentration && d.concentration.reliable">
-                  <div class="rounded-lg border p-3 flex items-start gap-3" :class="d.concentration.verdict==='concentrated' ? 'border-amber-200 bg-amber-50/60' : 'border-gray-200 bg-white'">
+                  <div class="rounded-lg border p-3 flex items-start gap-3" :class="d.concentration.verdict==='concentrated' ? 'border-amber-200 bg-amber-50/60' : 'border-gray-200 bg-white'" title="What share of active spend your single biggest campaign carries. Above ~40% is efficient but fragile — one fatigue cycle in that campaign can crater the whole account. The fix is a pipeline of parallel winners, not putting all budget in one.">
+
                     <span class="mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border flex-shrink-0" :class="d.concentration.verdict==='concentrated' ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-green-50 text-green-700 border-green-200'" x-text="d.concentration.verdict"></span>
                     <div class="flex-1 min-w-0">
                       <div class="text-sm font-medium">Spend concentration — top campaign <span x-text="d.concentration.topShare + '%'"></span> of active spend</div>

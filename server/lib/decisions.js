@@ -138,7 +138,7 @@ function buildDayparting(weekday, hourly) {
     out.hour = { best: hr(hourly.best.hour), worst: hr(hourly.worst.hour) };
   }
   if (out.weekday) {
-    out.note = `${out.weekday.best} is the best day (${out.weekday.best && out.weekday.bestLabel}), ${out.weekday.worst} the worst. Gently weight budget toward ${out.weekday.best} — don't hard on/off schedule at this volume.`;
+    out.note = `${out.weekday.best} is the best day (${out.weekday.bestLabel}), ${out.weekday.worst} the worst. Gently weight budget toward ${out.weekday.best} — don't hard on/off schedule at this volume.`;
   } else if (out.hour) {
     out.note = `Best hours cluster around ${out.hour.best}, weakest around ${out.hour.worst}. Treat as a gentle bid/budget lean, not a hard schedule.`;
   } else {
