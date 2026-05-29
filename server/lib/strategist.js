@@ -28,7 +28,7 @@ const div = (a, b) => (b > 0 ? a / b : null);
 const round = (n, d = 2) => (Number.isFinite(n) ? Math.round(n * 10 ** d) / 10 ** d : null);
 
 function emptyAgg() {
-  return { spend: 0, purchases: 0, value: 0, impressions: 0, reach: 0, clicks: 0, lpv: 0, linkClicks: 0, atc: 0, count: 0 };
+  return { spend: 0, purchases: 0, value: 0, impressions: 0, reach: 0, clicks: 0, lpv: 0, linkClicks: 0, atc: 0, ic: 0, count: 0 };
 }
 function addMetrics(agg, m) {
   agg.spend += nz(m.spend);
@@ -40,12 +40,13 @@ function addMetrics(agg, m) {
   agg.lpv += nz(m.landingPageViewsTotal);
   agg.linkClicks += nz(m.linkClicks);
   agg.atc += nz(m.atcTotal);
+  agg.ic += nz(m.icTotal);
   agg.count += 1;
 }
 function derive(agg) {
   return {
     spend: round(agg.spend), purchases: agg.purchases, value: round(agg.value),
-    impressions: agg.impressions, clicks: agg.clicks, lpv: agg.lpv, linkClicks: agg.linkClicks, atc: agg.atc,
+    impressions: agg.impressions, clicks: agg.clicks, lpv: agg.lpv, linkClicks: agg.linkClicks, atc: agg.atc, ic: agg.ic,
     cpa: round(div(agg.spend, agg.purchases)),
     roas: round(div(agg.value, agg.spend)),
     ctr: round(div(agg.clicks, agg.impressions) * 100, 3),
@@ -316,7 +317,7 @@ export async function analyzeStrategy({ window = 'last_30d' } = {}) {
       kpi, totals, campaigns, adsets, medianRoas, medianKpiCpa,
       sortedDaily, campDailyRows, adRankingRows, reachWindows,
       ageGenderRows, placementRows, countryRows, deviceRows,
-      weekday, hourly,
+      weekday, hourly, days,
       capiDetected: null, // dataset_quality came back empty for this account; surfaced as advisory
     });
   } catch (e) {

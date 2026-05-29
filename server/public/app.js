@@ -1100,7 +1100,8 @@ function dashboard() {
       }
       if (b.opportunities && b.opportunities.length) { lines.push('OPPORTUNITIES:'); b.opportunities.forEach((o) => lines.push(`- ${o}`)); lines.push(''); }
       if (b.watch && b.watch.length) { lines.push('WATCH (not yet confident):'); b.watch.forEach((w) => lines.push(`- ${w}`)); lines.push(''); }
-      if (b.do_not_act && b.do_not_act.length) { lines.push("DON'T OVERREACT TO:"); b.do_not_act.forEach((n) => lines.push(`- ${n}`)); }
+      if (b.do_not_act && b.do_not_act.length) { lines.push("DON'T OVERREACT TO:"); b.do_not_act.forEach((n) => lines.push(`- ${n}`)); lines.push(''); }
+      if (b.growth_moves && b.growth_moves.length) { lines.push('GROWTH MOVES:'); b.growth_moves.forEach((g) => lines.push(`- [${g.impact}/${g.effort}] ${g.title} — ${g.why}`)); }
       const text = lines.join('\n').trim();
       try {
         await navigator.clipboard.writeText(text);
@@ -1181,6 +1182,15 @@ function dashboard() {
     },
     fmtZ(z) { return z == null ? '—' : (Number(z) > 0 ? '+' : '') + Number(z).toFixed(1) + 'σ'; },
     fmtCI(lo, hi) { return (lo == null || hi == null) ? '' : `$${lo}–$${hi}`; },
+    fmtInt(n) { return n == null || !Number.isFinite(Number(n)) ? '—' : Math.round(Number(n)).toLocaleString(); },
+    growthApplClass(a) {
+      if (a === 'foundational') return 'bg-purple-50 text-purple-700 border-purple-200';
+      if (a === 'primary') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      if (a === 'secondary' || a === 'ready') return 'bg-teal-50 text-teal-700 border-teal-200';
+      if (a === 'gated') return 'bg-amber-50 text-amber-700 border-amber-200';
+      if (a === 'avoid') return 'bg-red-50 text-red-600 border-red-200';
+      return 'bg-gray-50 text-gray-600 border-gray-200';
+    },
 
     toastError(title, message) { this.toast = { show: true, type: 'error', title, message }; setTimeout(() => (this.toast.show = false), 7000); },
     toastInfo(title, message) { this.toast = { show: true, type: 'info', title, message }; setTimeout(() => (this.toast.show = false), 4000); },

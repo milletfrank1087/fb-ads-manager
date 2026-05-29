@@ -33,6 +33,21 @@ Sprint to make the advisor "better than SOTA": feed it the best community (non-M
 - **Frequency<1.5 = fresh-audience headroom**, not a problem: lower ROAS there is normal top-of-funnel prospecting. Surfaced as a "headroom to scale" badge + note instead of a fatigue warning.
 - **Robustness:** `buildDecisionDigest` ctx now has array/object defaults; analyze verified across last_7d / last_30d / last_90d (short windows degrade `today.reliable` to false rather than crashing). Narrative + briefing endpoints both healthy; Full Analysis tab unaffected.
 
+### Sprint 3 — growth/revenue advisory (raise donations, not just defend CPA)
+
+User context: setup is **1 campaign = 1 geo = 1 url, one shared pixel** (donation campaign, `ptg.risehope.online` — Mariana glioblastoma fund). Asked the AI to also advise how to *increase* revenue. Existing engine only did defensive moves (kill/scale/pause/exclude); added a parallel **growth** layer.
+
+- **Research (3 rounds + disconfirmation) verdict — incrementality, not dashboard ROAS, is the ranking key:**
+  - **Prospecting is the real engine** (55-75% incremental in geo-holdout studies) vs **retargeting 15-35%** (its dashboard ROAS is inflated 3-5× — those buyers were already converting). So the growth budget goes to COLD, not warm.
+  - **Donor-seed lookalikes** are the #1 lever; seed quality > size; manual 1% beats Advantage+/broad below ~50 conv/wk + $30-50/day (this account's zone). A pixel shared across beneficiaries pools a bigger/stronger seed — an advantage here.
+  - **Bid/cost caps DISCONFIRMED for this budget** — they need ~50 conv/wk AND ~€5k/wk per ad set; below ~€2k/wk they starve delivery. Tagged `avoid`. (Counter to generic "use cost caps to control CPA" advice.)
+  - **CAPI is the foundational unlock** (recovers 20-45% lost conversions, sharpens seeds, enlarges retarget pools, prerequisite for Value Optimization). Probe shows it's NOT confirmed → ranked `foundational`, do-first.
+  - **Value Optimization** fits variable donation sizes (15-30% lift potential) but is gated on CAPI + ~50-100 purchases/wk. Live: ~136 donations/wk clears the volume bar, so CAPI is the *only* thing gating it.
+- **`buildGrowth` (`decisions.js`)** turns the playbook into account-specific output: a **funnel** (LPV→ATC→IC→purchase with per-step drop% + biggest absolute leak + abandoner pool), **headroom** (campaigns still at freq<1.6), **value** readiness, and a ranked `levers[]`. Live funnel was genuinely insightful: **90.6% drop Landing→ATC** (19,870 lost = page/offer-match problem) and **68.6% checkout→donation** = **1,273 warm abandoners** (the one incremental retarget pool). Needed a new `ic`/`icTotal` aggregate in `strategist.js`.
+- **AI wiring:** appended a GROWTH section to `COMMUNITY_PLAYBOOK` (both prompts) + added a `growth_moves[]` output to the briefing (title/impact/why/effort). Live AI produced exactly the right ladder: CAPI now → 1% donor lookalikes this week → small abandoner layer (grounded in the real 1,273) — and did NOT pitch bid caps. Strategy/Full-Analysis prompt also nudged toward prospecting via existing `scale_horizontal`/`duplicate`/`fix_tracking` enums (no schema break).
+- **Gotcha — overlapping lenses:** the segment rollups (gender/age/platform) are NON-additive views of the same spend; the prompt already warns against stacking exclusions. Growth levers are similarly sequenced ("apply ONE, re-measure") rather than "do all five", to avoid resetting learning on a low-volume account.
+- **UI:** `growth_moves` block in the briefing (impact/effort chips) + a dedicated **Growth & funnel** card (funnel bar with drop-offs, biggest-leak note, color-coded ranked levers). Verified in-browser; no app console errors.
+
 ---
 
 ## 2026-05-29 Strategy advisor (suggest-only performance AI)

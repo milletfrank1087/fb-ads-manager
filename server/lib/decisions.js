@@ -195,6 +195,95 @@ function buildSaturation(reach) {
   };
 }
 
+// ---------- growth / revenue-expansion advisory ----------
+// Research-backed (ecommerce/donation media-buyer consensus, incrementality literature). The ranking
+// is deliberate: prospecting carries the real incremental growth (55-75% incremental) vs retargeting
+// (15-35%, systematically over-credited), and bid/cost caps STARVE delivery at this budget. CAPI is
+// the foundational unlock. Everything is suggest-only and gated on this account's actual numbers.
+function buildGrowth({ totals = {}, campaigns = [], saturation, signal, kpi, days = 30 }) {
+  const capiReady = signal?.capiDetected === true;
+  const kpiWord = (kpi?.label || 'conversions').replace(/s$/, '');
+
+  // --- funnel drop-off: where people fall out, and the warmest (genuinely incremental) retarget pool ---
+  const lpv = nz(totals.lpv), atc = nz(totals.atc), ic = nz(totals.ic), pur = nz(totals.purchases);
+  const steps = [];
+  if (lpv > 0) steps.push({ key: 'landing', label: 'Landing views', count: lpv });
+  if (atc > 0) steps.push({ key: 'atc', label: 'Adds to cart', count: atc });
+  if (ic > 0) steps.push({ key: 'ic', label: 'Checkouts initiated', count: ic });
+  steps.push({ key: 'purchase', label: kpi?.label || 'Purchases', count: pur });
+
+  let funnel = null;
+  if (steps.length >= 2 && steps[0].count > 0) {
+    for (let i = 1; i < steps.length; i++) {
+      const prev = steps[i - 1].count; const cur = steps[i].count;
+      steps[i].fromPrevPct = prev > 0 ? round((cur / prev) * 100, 1) : null;
+      steps[i].dropPct = prev > 0 ? round((1 - cur / prev) * 100, 1) : null;
+      steps[i].lost = Math.max(0, prev - cur);
+    }
+    const checkoutAbandoners = ic > 0 ? Math.max(0, ic - pur) : null;
+    const cartAbandoners = atc > 0 ? Math.max(0, atc - Math.max(ic, pur)) : null;
+    let biggestLeak = null;
+    for (let i = 1; i < steps.length; i++) {
+      if (nz(steps[i].lost) > 0 && (!biggestLeak || steps[i].lost > biggestLeak.lost)) {
+        biggestLeak = { from: steps[i - 1].label, to: steps[i].label, lost: steps[i].lost, dropPct: steps[i].dropPct };
+      }
+    }
+    funnel = {
+      steps, checkoutAbandoners, cartAbandoners, biggestLeak,
+      note: biggestLeak
+        ? `Biggest leak: ${biggestLeak.dropPct}% drop ${biggestLeak.from} → ${biggestLeak.to} (${biggestLeak.lost} people).${checkoutAbandoners ? ` ~${checkoutAbandoners} initiated checkout but didn't ${kpiWord} — your warmest, genuinely-incremental retargeting pool.` : ''}`
+        : null,
+    };
+  }
+
+  // --- prospecting headroom: campaigns still reaching mostly new people (room for new audiences) ---
+  const headroomCampaigns = campaigns
+    .filter((c) => c.status === 'ACTIVE' && (c.frequency == null || c.frequency < 1.6) && nz(c.kpiCount) >= 5)
+    .map((c) => ({ name: c.name, frequency: c.frequency, cpa: c.kpiCpa, roas: c.roas, conv: c.kpiCount }))
+    .sort((a, b) => (nz(a.cpa) || 1e9) - (nz(b.cpa) || 1e9))
+    .slice(0, 6);
+  const headroom = {
+    freshAudience: saturation?.freshHeadroom === true || saturation?.verdict === 'healthy',
+    campaigns: headroomCampaigns,
+    note: headroomCampaigns.length
+      ? `${headroomCampaigns.length} active campaign(s) still at low frequency — expand reach with NEW prospecting audiences (donor-seed lookalikes / fresh interests) rather than only raising budget on the same pocket.`
+      : `Frequencies are climbing — new prospecting audiences will extend reach better than more budget on existing ad sets.`,
+  };
+
+  // --- value opportunity: variable donation amounts → value optimization (gated on CAPI + volume) ---
+  const weeklyPurchases = days > 0 ? round((pur * 7) / days, 1) : null;
+  const avgDonation = pur > 0 ? round(nz(totals.value) / pur) : null;
+  const valueCandidate = capiReady && weeklyPurchases != null && weeklyPurchases >= 50;
+  const value = {
+    avgDonation, weeklyPurchases, capiReady, candidate: valueCandidate,
+    note: !capiReady
+      ? `Donation sizes vary widely, so Value Optimization (bid toward bigger donors) could lift revenue ~15-30% — but it REQUIRES clean purchase-value via the Conversions API, which isn't confirmed here. Fix CAPI first, then revisit.`
+      : valueCandidate
+        ? `CAPI looks present and you're at ~${weeklyPurchases} donations/week — enough to A/B test Value Optimization vs volume optimization for 2-3 weeks. Wide donation-size variance is exactly where it wins.`
+        : `CAPI is present but ~${weeklyPurchases ?? '?'} donations/week is below the ~50-100/week Value Optimization needs to learn. Stay on volume optimization; revisit as donations grow.`,
+  };
+
+  // --- ranked levers (the growth playbook applied to THIS account's numbers) ---
+  const abandoners = funnel?.checkoutAbandoners || funnel?.cartAbandoners || null;
+  const levers = [];
+  if (!capiReady) levers.push({ lever: 'Conversions API (CAPI)', applicability: 'foundational',
+    why: 'The single highest-leverage growth unlock: recovers 20-45% of conversions the browser pixel loses, enlarges retargeting pools, sharpens lookalike seeds, de-noises every CPA/ROAS verdict, and is the prerequisite for Value Optimization. Do this first.' });
+  levers.push({ lever: 'Donor-seed lookalikes (per geo)', applicability: 'primary',
+    why: 'Prospecting carries the real incremental growth (research: 55-75% incremental vs retargeting 15-35%). Build a 1% lookalike from the donor/purchase pixel seed (pooled across beneficiaries = a stronger seed), one per geo; start at 1%, queue 2-3% as small markets saturate. At this budget keep it MANUAL — Advantage+/broad needs ~50 conv/wk per ad set and >$30-50/day to beat a tight lookalike.' });
+  levers.push({ lever: 'Interest prospecting tests', applicability: 'secondary',
+    why: 'When the 1-3% lookalike saturates, test cause/medical interests (charity, cancer awareness, health/medical communities) + demographics that over-index for giving (women 35-64). Higher CPA than warm, but high-incremental net-new reach.' });
+  levers.push({ lever: 'Small abandoner-retargeting layer', applicability: abandoners ? 'ready' : 'gated',
+    why: `${abandoners ? `~${abandoners} checkout/cart abandoners are your warmest pool. ` : 'Once site traffic is sufficient, '}Run ONE small ad set (checkout/cart abandoners, 7-14d, EXCLUDE past donors, friction-removal creative), keep it <20% of budget, judge on 1-day-click. Retargeting ROAS is systematically over-credited — most of those donors would have given anyway.` });
+  levers.push({ lever: 'Value Optimization', applicability: valueCandidate ? 'ready' : 'gated', gatedOn: valueCandidate ? null : (capiReady ? 'more weekly donations' : 'Conversions API'), why: value.note });
+  levers.push({ lever: 'Bid / cost caps', applicability: 'avoid',
+    why: 'NOT a lever at this budget — caps need ~50 conv/wk AND ~€5k/wk per ad set; below ~€2k/wk total they starve delivery. Stay on Lowest Cost; control CPA via creative, audience and exclusions instead.' });
+
+  return {
+    funnel, headroom, value, levers,
+    note: 'Growth order for a low-budget donation account: fix tracking (CAPI) → expand high-incrementality PROSPECTING (donor lookalikes per geo, then interests) → add only a SMALL abandoner-retargeting layer → unlock Value Optimization once CAPI + volume allow. Avoid bid caps at this scale.',
+  };
+}
+
 // ---------- creative health (ranking diagnostics) ----------
 
 function buildCreative(adRankingRows, kpi) {
@@ -428,7 +517,7 @@ export function buildDecisionDigest(ctx) {
     kpi, totals = {}, campaigns = [], adsets = [], medianRoas, medianKpiCpa,
     sortedDaily = [], campDailyRows = [], adRankingRows = [], reachWindows,
     ageGenderRows = [], placementRows = [], countryRows = [], deviceRows = [],
-    weekday = null, hourly = null, capiDetected,
+    weekday = null, hourly = null, days = 30, capiDetected,
   } = ctx;
 
   // Segment verdicts compare each cell to the ACCOUNT-BLENDED CPA (spend/conversions across the
@@ -486,6 +575,9 @@ export function buildDecisionDigest(ctx) {
       : 'Could not confirm a Conversions API (server-side) signal — the Dataset Quality endpoint returned empty for this account. If CAPI is not set up, it is the single highest-leverage fix: browser-pixel-only tracking can miss 20-40% of conversions, which makes every CPA/ROAS verdict noisier and harder to act on with confidence. If CAPI is already live, ignore this.',
   };
 
+  // Growth/revenue-expansion advisory (needs `signal` for CAPI status and `saturation` for headroom).
+  const growth = buildGrowth({ totals, campaigns, saturation, signal, kpi, days });
+
   // priority list: real actions first (kill > scale > duplicate > targeting > refresh > caps), holds/watch last
   const ACTION_RANK = { pause: 0, scale_down: 1, scale_up: 2, duplicate: 3, narrow_targeting: 4, expand_targeting: 5, refresh_creative: 6, cost_cap_candidate: 7, hold: 8, watch: 9 };
   const all = [...entityDecisions, ...targeting, ...capFlags].sort((a, b) => {
@@ -508,7 +600,7 @@ export function buildDecisionDigest(ctx) {
       watch: all.filter((d) => d.action === 'watch').length,
     },
     decisions: all,
-    today, trend7, concentration, dayparting, creative, saturation, signal,
+    today, trend7, concentration, dayparting, creative, saturation, signal, growth,
     segments,
   };
 }

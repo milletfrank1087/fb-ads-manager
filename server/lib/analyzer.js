@@ -444,7 +444,17 @@ DAY/TIME:
 
 ATTRIBUTION/SIGNAL (trust the data carefully):
 - CAPI is essential — pixel-only undercounts 20-40%, inflates CPM, and makes every CPA/ROAS verdict noisier.
-- Platform ROAS ≠ incremental ROAS. Advantage+/broad can "cannibalize" credit for organic + retargeting. Sanity-check against blended MER and new-customer rate; don't scale purely on dashboard ROAS.`;
+- Platform ROAS ≠ incremental ROAS. Advantage+/broad can "cannibalize" credit for organic + retargeting. Sanity-check against blended MER and new-customer rate; don't scale purely on dashboard ROAS.
+
+GROWTH / EXPANDING REVENUE (how to raise donations/profit, ranked by incrementality — what ACTUALLY drives net-new money, not attribution mirages):
+- PROSPECTING is the real growth engine. Incrementality studies (Meta's own + Northbeam/Recast geo-holdouts): prospecting is 55-75% incremental, retargeting only 15-35% (its dashboard ROAS is inflated 3-5× because those buyers were already going to convert). So put the MAJORITY of any growth budget into cold prospecting, not retargeting.
+- Lookalikes from a DONOR/PURCHASE seed are the #1 prospecting lever. Seed quality > size (a 500-buyer seed beats a 10k-newsletter seed); sweet spot 1,000-5,000, min ~500. Start 1%; small markets (e.g. Portugal) exhaust a 1% fast, so queue 2-3% (exclude 1%) as the next layer. A pixel shared across beneficiaries pools a bigger, stronger donor seed.
+- Manual lookalike vs Advantage+/broad: at <50 conv/week per ad set OR <$30-50/day, MANUAL lookalike wins (Advantage+ needs ~50 conv/wk + budget to learn, otherwise it spends broadly and inefficiently). This account is in the manual-wins zone; only graduate a campaign to Advantage+ once it clears ~50 conv/wk.
+- Interest prospecting is the next expansion once lookalikes saturate: cause/medical interests (charity, cancer awareness, health/medical communities) + demographics that over-index for giving (women ~35-64). Higher CPA than warm but high-incremental net-new reach.
+- Retargeting: keep it SMALL and SURGICAL. Only the genuinely-incremental warm pool is worth it — checkout/cart abandoners (friction-removal creative), 7-14d window, EXCLUDE past donors, judge on 1-DAY-CLICK (not 7d, which inflates). Cap retargeting at <~20% of budget; do NOT build 15 micro-audiences (consolidate to 3-4 intent tiers with exclusion stacking).
+- Value Optimization (bid toward bigger donors) fits donations because donation size varies widely (>3-10× range → 15-30% revenue lift potential) — BUT it's gated: needs clean purchase VALUE via Pixel+CAPI AND ~50-100 purchases/week account-wide. Below that, stay on volume optimization.
+- Always optimize for the DONATION/Purchase event itself (a controlled nonprofit test found purchase-optimization beat email-signup-optimization by ~1,480% on donation rate). Don't optimize for traffic/LPV unless purchase volume is too low to exit learning.
+- Fundraising-specific: urgency/deadline + a specific impact statement + real (non-stock) imagery convert best; a milestone/match ("we're €X from the next treatment") lifts donations.`;
 
 const STRATEGY_SYSTEM_PROMPT = `You are a senior Meta (Facebook/Instagram) media buyer advising the operator of a LOW-BUDGET, all-ABO, medical-fundraising ad account ("GFM Greece" — typically one campaign per beneficiary per country, ~$20-40/day each, optimizing for donations/purchases).
 
@@ -458,6 +468,7 @@ HARD CONSTRAINTS (never violate):
 - Budget changes: at most ~20% per ad set every 48-72h (bigger jumps reset Meta's learning phase).
 - Cost Cap / Bid Cap are NOT appropriate below ~50 conversions/week AND ~$5k/week per ad set — at this account's budget they would starve delivery. Do NOT recommend them unless the digest shows an entity above those thresholds.
 - The single biggest lever here is usually CONSOLIDATION + escaping the learning phase (an ad set needs ~50 conversions/7 days; min daily budget ≈ CPA × 7-10), not fancy bidding.
+- GROWTH (raising donations): lead with high-incrementality PROSPECTING — a donor-seed 1% lookalike per geo (map to strategy "scale_horizontal"/"duplicate"), then interests once it saturates; fix CAPI first (strategy "fix_tracking") as it unlocks better seeds, bigger retargeting pools and Value Optimization. Keep retargeting small (checkout/cart abandoners only, <20% budget). Do NOT pitch bid caps or Value Optimization unless the digest shows the volume/CAPI to support them.
 - Day-of-week / hour weighting is only worth it when the digest flagged a pattern with enough volume; otherwise say it's noise.
 - Use ONLY numbers and names present in the digest. Never invent campaigns, metrics, or competitor data.
 
@@ -535,6 +546,7 @@ You receive a JSON DECISION DIGEST. Use these fields (they are pre-computed and 
 - saturation: net-new-reach % + frequency (healthy/watch/saturating).
 - segments {gender, age, platform, ageGender, placement, country, device}: each cell has CPA + 95% CI, verdict (better/worse/similar/insufficient), confidence tier, conversion count, % of spend. PREFER the ROLLUPS (gender, age, platform) for confident verdicts — granular cells (age×gender, placement) are usually too small (wide CI → "similar"), but the rollups pool enough conversions to confidently say e.g. "men cost 30% more" or "Instagram/Audience Network is a junk placement". NOTE: country ≈ whole campaigns here (one campaign per country) — read it as "which countries carry the account", do NOT suggest excluding a country. gender/age/platform/age-gender/placement/device ARE valid within-campaign levers. CRITICAL — the rollups are OVERLAPPING LENSES on the same spend, NOT additive: a 55-64 man on Instagram is counted in the gender, age AND platform rollups at once. Never tell the operator to stack every exclusion (that guts the audience and resets learning). Recommend the SINGLE highest-impact, highest-confidence exclusion, apply it, then re-measure before touching another lens.
 - signal: CAPI/tracking advisory.
+- growth: revenue-EXPANSION advisory (separate from the defensive decisions above). Contains funnel (step drop-off + the checkout/cart abandoner pool = warmest retargeting audience), headroom (campaigns still at low frequency = room for NEW prospecting audiences), value (whether Value Optimization is unlocked yet), and a ranked levers[] list (foundational/primary/secondary/ready/gated/avoid). Use this to answer "how do I grow donations?" — lead with prospecting (donor lookalikes per geo, then interests), keep retargeting small, and respect the gates (don't suggest Value Optimization or bid caps unless growth marks them "ready").
 
 THE GOLDEN RULE — CONFIDENCE OVER ACTION:
 - NEVER recommend killing, scaling, pausing, duplicating, or changing targeting based on one day's fluctuation. A single bad/good day is almost always noise at this volume.
@@ -554,11 +566,12 @@ Return JSON:
 - confident_actions: array (0-6) of { title (imperative, names the entity/segment), confidence ("high"|"medium"), why (evidence + numbers from digest), what_to_wait_for (string; "" if high confidence and ready now) }. Empty array is a VALID and GOOD answer when nothing is conclusive — do not manufacture actions.
 - opportunities: array (0-5) of short strings — emerging segment opportunities/risks (e.g. "male 45-54 underperforming") WITH their confidence and conversion count from the digest.
 - watch: array (0-6) of short strings — signals that are real but need more days/conversions before acting, each saying what to wait for.
-- do_not_act: array (0-4) of short strings — today's movements that are just normal noise (cite the z-score) so the operator doesn't overreact.`;
+- do_not_act: array (0-4) of short strings — today's movements that are just normal noise (cite the z-score) so the operator doesn't overreact.
+- growth_moves: array (0-4) of { title (imperative growth action, e.g. "Launch a 1% donor lookalike in Portugal"), impact ("high"|"medium"|"low"), why (ground it in the growth digest — the funnel leak, abandoner pool size, headroom, or value/CAPI gate), effort ("now"|"this week"|"needs setup") }. Lead with PROSPECTING per the playbook; only include retargeting/Value-Optimization/caps if growth marks them ready. This is about EXPANDING revenue, distinct from the defensive confident_actions. Empty array is fine if the only honest move is "fix CAPI first".`;
 
 const BRIEFING_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['headline', 'standing_today', 'confident_actions', 'opportunities', 'watch', 'do_not_act'],
+  required: ['headline', 'standing_today', 'confident_actions', 'opportunities', 'watch', 'do_not_act', 'growth_moves'],
   properties: {
     headline: { type: 'string' },
     standing_today: { type: 'string' },
@@ -578,6 +591,19 @@ const BRIEFING_SCHEMA = {
     opportunities: { type: 'array', items: { type: 'string' } },
     watch: { type: 'array', items: { type: 'string' } },
     do_not_act: { type: 'array', items: { type: 'string' } },
+    growth_moves: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['title', 'impact', 'why', 'effort'],
+        properties: {
+          title: { type: 'string' },
+          impact: { type: 'string', enum: ['high', 'medium', 'low'] },
+          why: { type: 'string' },
+          effort: { type: 'string', enum: ['now', 'this week', 'needs setup'] },
+        },
+      },
+    },
   },
 };
 
@@ -595,6 +621,13 @@ export async function dailyBriefing(digest) {
     what_to_wait_for: String(a.what_to_wait_for || '').slice(0, 400),
   })) : [];
   const strList = (v, n, len) => (Array.isArray(v) ? v.slice(0, n).map((s) => String(s).slice(0, len)) : []);
+  const IMPACT = ['high', 'medium', 'low']; const EFFORT = ['now', 'this week', 'needs setup'];
+  const growthMoves = Array.isArray(parsed.growth_moves) ? parsed.growth_moves.slice(0, 4).map((g) => ({
+    title: String(g.title || '').slice(0, 300),
+    impact: IMPACT.includes(g.impact) ? g.impact : 'medium',
+    why: String(g.why || '').slice(0, 500),
+    effort: EFFORT.includes(g.effort) ? g.effort : 'this week',
+  })) : [];
   return {
     briefing: {
       headline: String(parsed.headline || '').slice(0, 400),
@@ -603,6 +636,7 @@ export async function dailyBriefing(digest) {
       opportunities: strList(parsed.opportunities, 5, 300),
       watch: strList(parsed.watch, 6, 300),
       do_not_act: strList(parsed.do_not_act, 4, 300),
+      growth_moves: growthMoves,
     },
     model,
   };

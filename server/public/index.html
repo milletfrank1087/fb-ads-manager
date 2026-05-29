@@ -999,10 +999,70 @@
                             <template x-for="(n,i) in strategy.briefing.do_not_act" :key="i"><li x-text="n"></li></template>
                           </ul>
                         </div>
+
+                        <div x-show="strategy.briefing.growth_moves && strategy.briefing.growth_moves.length" class="pt-1">
+                          <div class="text-[11px] font-semibold text-emerald-700 uppercase tracking-wide mb-1" title="How to GROW donations (separate from defensive actions). Ranked by incrementality: prospecting (donor lookalikes, interests) drives real net-new revenue; retargeting is kept small; bid caps are avoided at this budget.">↑ Growth moves (raise donations)</div>
+                          <div class="space-y-1.5">
+                            <template x-for="(g,i) in strategy.briefing.growth_moves" :key="i">
+                              <div class="flex items-start gap-2 text-[12px]">
+                                <span class="mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border flex-shrink-0" :class="g.impact==='high' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : (g.impact==='low' ? 'bg-gray-100 text-gray-500 border-gray-300' : 'bg-teal-50 text-teal-700 border-teal-200')" x-text="g.impact"></span>
+                                <div>
+                                  <span class="font-medium text-meta-gray-800" x-text="g.title"></span>
+                                  <span class="text-[10px] text-meta-gray-400" x-text="'· ' + g.effort"></span>
+                                  <div class="text-meta-gray-600" x-text="g.why"></div>
+                                </div>
+                              </div>
+                            </template>
+                          </div>
+                        </div>
                       </div>
                     </template>
                   </div>
                 </div>
+
+                <!-- growth & funnel (data-driven, suggest-only) -->
+                <template x-if="d.growth">
+                  <div class="bg-white rounded-lg border border-emerald-200">
+                    <div class="px-4 py-2 border-b border-emerald-100 flex items-center gap-2 bg-emerald-50/50">
+                      <span class="text-sm font-semibold text-emerald-800">Growth &amp; funnel</span>
+                      <span class="text-[11px] text-meta-gray-500" title="Where donors fall out of the funnel, the warmest retargeting pool, and the ranked levers to expand revenue. Suggest-only.">revenue expansion · suggest-only</span>
+                    </div>
+                    <div class="p-3 space-y-3">
+                      <!-- funnel -->
+                      <div x-show="d.growth.funnel && d.growth.funnel.steps" title="Account funnel over the window. The biggest % drop tells you the bottleneck: landing→add-to-cart leaks = page/offer/creative-match problem; checkout→donation leaks = the warmest, genuinely-incremental retargeting pool.">
+                        <div class="flex flex-wrap items-stretch gap-1.5">
+                          <template x-for="(s,i) in (d.growth.funnel ? d.growth.funnel.steps : [])" :key="i">
+                            <div class="flex items-center gap-1.5">
+                              <div class="px-2 py-1 rounded border border-gray-200 bg-meta-gray-50 text-center min-w-[84px]">
+                                <div class="text-[10px] text-meta-gray-500" x-text="s.label"></div>
+                                <div class="text-[13px] font-semibold text-meta-gray-800" x-text="fmtInt(s.count)"></div>
+                                <div x-show="i>0" class="text-[9px]" :class="s.dropPct>=70 ? 'text-red-600' : (s.dropPct>=40 ? 'text-amber-600' : 'text-meta-gray-400')" x-text="i>0 ? ('−'+s.dropPct+'%') : ''"></div>
+                              </div>
+                              <span x-show="i < (d.growth.funnel.steps.length-1)" class="text-meta-gray-300">→</span>
+                            </div>
+                          </template>
+                        </div>
+                        <div x-show="d.growth.funnel && d.growth.funnel.note" class="text-[12px] text-meta-gray-600 mt-1.5" x-text="d.growth.funnel ? d.growth.funnel.note : ''"></div>
+                      </div>
+                      <!-- ranked levers -->
+                      <div>
+                        <div class="text-[11px] font-semibold text-meta-gray-500 uppercase tracking-wide mb-1" title="Growth levers ranked by what actually drives net-new donations for a low-budget account. 'foundational/primary' first; 'avoid' = wrong tool at this budget.">Ranked growth levers</div>
+                        <div class="space-y-1">
+                          <template x-for="(l,i) in d.growth.levers" :key="i">
+                            <div class="flex items-start gap-2 text-[12px]">
+                              <span class="mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border flex-shrink-0 w-[88px] text-center" :class="growthApplClass(l.applicability)" x-text="l.applicability"></span>
+                              <div>
+                                <span class="font-medium text-meta-gray-800" x-text="l.lever"></span>
+                                <span x-show="l.gatedOn" class="text-[10px] text-amber-600" x-text="l.gatedOn ? ('· needs: '+l.gatedOn) : ''"></span>
+                                <div class="text-meta-gray-600" x-text="l.why"></div>
+                              </div>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
 
                 <!-- ranked decisions (rule-based, confidence-gated) -->
                 <div class="bg-white rounded-lg border border-gray-200">
