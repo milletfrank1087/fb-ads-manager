@@ -122,6 +122,53 @@ async function callOpenRouterText(model, messages, { maxTokens = 1100, temperatu
   return res.json();
 }
 
+// Streaming completion via SSE. Calls onDelta(chunk) per token; resolves with the full text.
+async function streamOpenRouter(model, messages, onDelta, { maxTokens = 1100, temperature = 0.35 } = {}) {
+  if (!config.openrouterApiKey) throw new Error('OPENROUTER_API_KEY missing — AI disabled.');
+  const res = await fetch(`${BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.openrouterApiKey}`,
+      'HTTP-Referer': 'http://localhost:' + config.port,
+      'X-Title': 'GFM Greece strategy advisor',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, stream: true }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`OpenRouter ${res.status}: ${shortErr(body)}`);
+    err.status = res.status;
+    throw err;
+  }
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const err = new Error('Streaming not supported by runtime'); err.status = 500; throw err;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = ''; let full = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? ''; // keep the trailing partial line
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t || t.startsWith(':') || !t.startsWith('data:')) continue; // skip SSE comments/keepalives
+      const data = t.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const json = JSON.parse(data);
+        const delta = json?.choices?.[0]?.delta?.content;
+        if (delta) { full += delta; onDelta(delta); }
+      } catch { /* partial JSON across chunks — ignore, next read completes it */ }
+    }
+  }
+  return { text: full, model };
+}
+
 async function runChatWithFallback(messages, opts) {
   const models = [config.openrouterModel, config.openrouterFallbackModel].filter((m, i, a) => m && a.indexOf(m) === i);
   let lastErr;
@@ -734,19 +781,48 @@ function chatContextBlock(last) {
   return parts.join('\n\n');
 }
 
-export async function strategyChat({ message, history = [], last }) {
+function buildChatMessages({ message, history = [], last }) {
   const turns = (Array.isArray(history) ? history : [])
     .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
     .slice(-10)
     .map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
-  const messages = [
+  return [
     { role: 'system', content: CHAT_SYSTEM_PROMPT },
-    { role: 'system', content: `LIVE DATA SNAPSHOT (window: ${last?.digest?.window || last?.window || 'recent'}):\n${chatContextBlock(last)}` },
+    { role: 'system', content: `LIVE DATA SNAPSHOT (window: ${last?.window || last?.digest?.window || 'recent'}):\n${chatContextBlock(last)}` },
     ...turns,
     { role: 'user', content: String(message).slice(0, 4000) },
   ];
+}
+
+export async function strategyChat({ message, history = [], last }) {
+  const messages = buildChatMessages({ message, history, last });
   const { text, model } = await runChatWithFallback(messages, { maxTokens: 1100, temperature: 0.35 });
   return { reply: text, model };
+}
+
+// Streaming variant: invokes onDelta(textChunk) as tokens arrive, returns the full reply at the end.
+// Falls back to the secondary model only if the primary fails BEFORE emitting any token (so the
+// client never sees a duplicated/partial answer stitched from two models).
+export async function strategyChatStream({ message, history = [], last, onDelta }) {
+  const messages = buildChatMessages({ message, history, last });
+  const models = [config.openrouterModel, config.openrouterFallbackModel].filter((m, i, a) => m && a.indexOf(m) === i);
+  let lastErr;
+  for (let mi = 0; mi < models.length; mi += 1) {
+    let emitted = false;
+    const wrap = (d) => { emitted = true; if (onDelta) onDelta(d); };
+    try {
+      const { text } = await streamOpenRouter(models[mi], messages, wrap, { maxTokens: 1100, temperature: 0.35 });
+      if (!text || !text.trim()) { const e = new Error('Empty response from model'); e.status = 502; throw e; }
+      return { reply: text, model: models[mi] };
+    } catch (err) {
+      lastErr = err;
+      if (emitted) break; // tokens already streamed — cannot safely retry on another model
+      const { transient } = classifyError(err.status, err.message);
+      if (!transient && mi === 0 && models.length > 1) { log.warn('analyzer.chat.stream.fallback', { from: models[mi], to: models[mi + 1] }); continue; }
+      if (mi < models.length - 1) { log.warn('analyzer.chat.stream.fallback', { from: models[mi], to: models[mi + 1] }); continue; }
+    }
+  }
+  throw lastErr || new Error('All OpenRouter models failed (stream)');
 }
 
 export async function suggestReply({ comment, analysis, postCtx, thread }) {

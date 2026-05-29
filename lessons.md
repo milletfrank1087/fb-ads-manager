@@ -58,6 +58,13 @@ User wanted to *interrogate* the advisor, not just read cards: e.g. the briefing
 - **Frontend:** third drawer tab ("Ask Advisor") with chat bubbles, suggestion chips, sticky input (Enter to send / Shift+Enter newline), typing indicator, per-message copy + model tag. Assistant text rendered via a tiny **safe** markdown formatter (`renderMd`: HTML-escape FIRST, then a whitelisted subset — bold/headings/bullets/code) to avoid an x-html injection vector while still showing the model's formatting. `runActiveTabAI` tightened so switching to chat doesn't kick off the narrative call.
 - **Discipline preserved:** suggest-only (no Meta writes), 409 until an analysis is loaded, history capped to last 10 turns, all numbers must come from the snapshot. Verified in-browser end-to-end; only the benign Tailwind-CDN notice in console.
 
+### Sprint 5 — chat streaming + discussion logging
+
+- **SSE streaming** (`strategyChatStream` + `streamOpenRouter`): all prior LLM calls were blocking; added a token-by-token path. Server sends `data: {type:'delta'|'done'|'error'}`; the endpoint branches on `body.stream`. **Fallback gotcha:** once tokens have streamed, you can't retry on the fallback model without duplicating text — so fallback is allowed ONLY before the first emitted token (tracked via an `emitted` flag), otherwise rethrow. SSE parsing must keep the trailing partial line across reads (`buf = lines.pop()`) and skip `:`-prefixed keepalive comments. Live: deltas arrived smoothly, `done` carried the model.
+- **Client streaming reactivity gotcha:** holding a reference to the pushed assistant object and mutating it does NOT trigger Alpine reactivity (the array stores a Proxy, not your original). Fix: capture the index from `push()-1` and mutate via `c.messages[idx].content += chunk`. Typing indicator shows only while the last message is still the user's; once the assistant bubble appears it shows a blinking cursor (`m.streaming`).
+- **Discussion logging** (`strategy_chat` table + `store.logStrategyChat`): persists user + assistant turns with session_id/model/window/elapsed_ms (and error_message on failure) for debugging. Verified: a streamed turn wrote 2 rows (user, assistant model=gemini-3.1-flash-lite ms=2351). The non-streaming JSON path (curl) still works for scripts.
+- Both paths log a `strategy.chat.ok` structured line (model, qLen, turns, elapsedMs, stream flag).
+
 ---
 
 ## 2026-05-29 Strategy advisor (suggest-only performance AI)

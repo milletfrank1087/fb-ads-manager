@@ -9,7 +9,7 @@ import { store } from './lib/store.js';
 import { pageToken } from './lib/pageToken.js';
 import * as comments from './lib/comments.js';
 import { autoMod } from './lib/autoMod.js';
-import { analyzerEnabled, suggestReply, strategyNarrative, dailyBriefing, strategyChat } from './lib/analyzer.js';
+import { analyzerEnabled, suggestReply, strategyNarrative, dailyBriefing, strategyChat, strategyChatStream } from './lib/analyzer.js';
 import { analyzeStrategy, getLastAnalysis, setNarrative, setBriefing } from './lib/strategist.js';
 import {
   syncAll as cmSyncAll,
@@ -310,24 +310,60 @@ app.post('/api/strategy/briefing', ah(async (req, res) => {
 
 // Conversational advisor — free-form Q&A grounded in the last analysis snapshot (digest + campaigns +
 // ad sets) and the community playbook. Multi-turn: client sends {message, history:[{role,content}]}.
+// Streams tokens via SSE when {stream:true}; otherwise returns JSON. Every turn is persisted to the
+// strategy_chat table for debugging.
 app.post('/api/strategy/chat', ah(async (req, res) => {
-  if (!analyzerEnabled()) {
-    return res.status(503).json({ ok: false, error: 'ai_disabled', message: 'AI is disabled (no OPENROUTER_API_KEY).' });
-  }
+  const wantStream = req.body?.stream === true;
+  const sessionId = (req.body?.sessionId || '').toString().slice(0, 64) || null;
+  const sseError = (status, error, message) => {
+    if (!wantStream) return res.status(status).json({ ok: false, error, message });
+    res.writeHead(status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    res.write(`data: ${JSON.stringify({ type: 'error', error, message })}\n\n`);
+    return res.end();
+  };
+
+  if (!analyzerEnabled()) return sseError(503, 'ai_disabled', 'AI is disabled (no OPENROUTER_API_KEY).');
   const message = (req.body?.message || '').toString().trim();
-  if (!message) return res.status(400).json({ ok: false, error: 'empty_message', message: 'message is required.' });
+  if (!message) return sseError(400, 'empty_message', 'message is required.');
   const last = getLastAnalysis();
   if (!last?.decisions && !last?.campaigns) {
-    return res.status(409).json({ ok: false, error: 'no_analysis', message: 'Run /api/strategy/analyze first so the advisor has data to reason over.' });
+    return sseError(409, 'no_analysis', 'Run /api/strategy/analyze first so the advisor has data to reason over.');
   }
   const history = Array.isArray(req.body?.history) ? req.body.history : [];
+  const window = last?.window || null;
+  const startedAt = Date.now();
+  try { store.logStrategyChat({ session_id: sessionId, role: 'user', content: message, window }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
+
+  if (!wantStream) {
+    try {
+      const { reply, model } = await strategyChat({ message, history, last });
+      const elapsedMs = Date.now() - startedAt;
+      log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, elapsedMs, stream: false });
+      try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: reply, model, window, elapsed_ms: elapsedMs }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
+      res.json({ ok: true, reply, model });
+    } catch (err) {
+      log.warn('strategy.chat.failed', { error: String(err.message || err) });
+      try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: '', window, error_message: String(err.message || err) }); } catch {}
+      res.status(502).json({ ok: false, error: 'chat_failed', message: String(err.message || err) });
+    }
+    return;
+  }
+
+  // Streaming (SSE)
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  const onDelta = (chunk) => { res.write(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`); };
   try {
-    const { reply, model } = await strategyChat({ message, history, last });
-    log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length });
-    res.json({ ok: true, reply, model });
+    const { reply, model } = await strategyChatStream({ message, history, last, onDelta });
+    const elapsedMs = Date.now() - startedAt;
+    res.write(`data: ${JSON.stringify({ type: 'done', model })}\n\n`);
+    res.end();
+    log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, elapsedMs, stream: true });
+    try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: reply, model, window, elapsed_ms: elapsedMs }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
   } catch (err) {
-    log.warn('strategy.chat.failed', { error: String(err.message || err) });
-    res.status(502).json({ ok: false, error: 'chat_failed', message: String(err.message || err) });
+    log.warn('strategy.chat.failed', { error: String(err.message || err), stream: true });
+    try { res.write(`data: ${JSON.stringify({ type: 'error', error: 'chat_failed', message: String(err.message || err) })}\n\n`); } catch {}
+    res.end();
+    try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: '', window, error_message: String(err.message || err) }); } catch {}
   }
 }));
 

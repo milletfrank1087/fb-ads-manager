@@ -317,6 +317,20 @@ CREATE TABLE IF NOT EXISTS ad_actions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_adactions_created ON ad_actions(created_at);
+
+CREATE TABLE IF NOT EXISTS strategy_chat (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  model TEXT,
+  window TEXT,
+  elapsed_ms INTEGER,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stratchat_session ON strategy_chat(session_id);
+CREATE INDEX IF NOT EXISTS idx_stratchat_created ON strategy_chat(created_at);
 `;
 
 db.exec(SCHEMA);
@@ -960,6 +974,25 @@ export const store = {
 
   getAdActions(limit = 100) {
     return db.prepare('SELECT * FROM ad_actions ORDER BY id DESC LIMIT ?').all(limit);
+  },
+
+  logStrategyChat(entry) {
+    return db.prepare(`
+      INSERT INTO strategy_chat (session_id, role, content, model, window, elapsed_ms, error_message)
+      VALUES (@session_id, @role, @content, @model, @window, @elapsed_ms, @error_message)
+    `).run({
+      session_id: entry.session_id ?? null,
+      role: entry.role,
+      content: String(entry.content ?? ''),
+      model: entry.model ?? null,
+      window: entry.window ?? null,
+      elapsed_ms: entry.elapsed_ms ?? null,
+      error_message: entry.error_message ?? null,
+    }).lastInsertRowid;
+  },
+
+  getStrategyChat(limit = 100) {
+    return db.prepare('SELECT * FROM strategy_chat ORDER BY id DESC LIMIT ?').all(limit);
   },
 
   countRecentAdActions(action, entityId, sinceIso) {

@@ -253,7 +253,7 @@ function dashboard() {
       briefing: null,
       copied: false,
       error: '',
-      chat: { messages: [], input: '', loading: false, error: '' },
+      chat: { messages: [], input: '', loading: false, error: '', sessionId: '' },
     },
     strategyWindows: [
       { id: 'last_7d', label: 'Last 7 days' },
@@ -1118,24 +1118,53 @@ function dashboard() {
       const message = (c.input || '').trim();
       if (!message || c.loading) return;
       if (!this.strategy.data) { c.error = 'Run an analysis first so the advisor has data to reason over.'; return; }
+      if (!c.sessionId) c.sessionId = 'sess_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       c.error = '';
+      const history = c.messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
       c.messages.push({ role: 'user', content: message });
       c.input = '';
       c.loading = true;
       this.$nextTick(() => this.scrollChatBottom());
+      let asstIdx = -1;
+      const ensureAsst = () => {
+        if (asstIdx < 0) { asstIdx = c.messages.push({ role: 'assistant', content: '', model: null, streaming: true }) - 1; }
+        return asstIdx;
+      };
       try {
-        const history = c.messages.slice(0, -1).slice(-10).map((m) => ({ role: m.role, content: m.content }));
         const r = await fetch('/api/strategy/chat', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, history }),
+          body: JSON.stringify({ message, history, stream: true, sessionId: c.sessionId }),
         });
-        const data = await r.json();
-        if (data.ok) {
-          c.messages.push({ role: 'assistant', content: data.reply, model: data.model });
-        } else {
-          c.error = data.message || data.error || 'Advisor unavailable';
+        if (!r.body || typeof r.body.getReader !== 'function') {
+          const data = await r.json().catch(() => ({}));
+          if (data.ok) { const i = ensureAsst(); c.messages[i].content = data.reply; c.messages[i].model = data.model; c.messages[i].streaming = false; }
+          else c.error = data.message || data.error || 'Advisor unavailable';
+          return;
         }
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop() ?? '';
+          for (const line of lines) {
+            const t = line.trim();
+            if (!t.startsWith('data:')) continue;
+            const payload = t.slice(5).trim();
+            if (!payload) continue;
+            let ev; try { ev = JSON.parse(payload); } catch { continue; }
+            if (ev.type === 'delta') { const i = ensureAsst(); c.messages[i].content += ev.text; this.scrollChatBottom(); }
+            else if (ev.type === 'done') { const i = ensureAsst(); c.messages[i].model = ev.model; c.messages[i].streaming = false; }
+            else if (ev.type === 'error') { c.error = ev.message || ev.error || 'Advisor unavailable'; }
+          }
+        }
+        if (asstIdx >= 0) c.messages[asstIdx].streaming = false;
+        if (asstIdx < 0 && !c.error) c.error = 'No response from advisor.';
       } catch (e) {
+        if (asstIdx >= 0) c.messages[asstIdx].streaming = false;
         c.error = String(e);
       } finally {
         c.loading = false;
