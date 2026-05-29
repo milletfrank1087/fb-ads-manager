@@ -1496,9 +1496,35 @@
                     <div :class="m.role==='user' ? 'flex justify-end' : 'flex justify-start'">
                       <div :class="m.role==='user' ? 'bg-indigo-600 text-white rounded-2xl rounded-br-sm px-3.5 py-2 max-w-[80%]' : 'bg-white border border-gray-200 text-meta-gray-800 rounded-2xl rounded-bl-sm px-3.5 py-2.5 max-w-[88%]'">
                         <div x-show="m.role==='user'" class="text-[13px] whitespace-pre-wrap" x-text="m.content"></div>
+                        <!-- read-only tool activity (the AI fetched live data) -->
+                        <template x-if="m.role==='assistant' && m.tools && m.tools.length">
+                          <div class="mb-1.5 space-y-1" title="The advisor fetched live data with read-only tools — these never change anything in Meta.">
+                            <template x-for="(t, ti) in m.tools" :key="ti">
+                              <div class="flex items-center gap-1.5 text-[11px]"
+                                   :class="t.status==='failed' ? 'text-red-500' : (t.status==='running' ? 'text-indigo-500' : 'text-emerald-600')">
+                                <svg x-show="t.status==='running'" class="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                                <svg x-show="t.status==='done'" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                <svg x-show="t.status==='failed'" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                <span x-text="t.label"></span>
+                                <span x-show="t.summary" class="text-meta-gray-400" x-text="'· ' + t.summary"></span>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
                         <div x-show="m.role==='assistant'" class="text-[13px] leading-relaxed advisor-md">
                           <span x-html="renderMd(m.content)"></span><span x-show="m.streaming" class="inline-block w-1.5 h-3.5 ml-0.5 bg-indigo-400 animate-pulse align-middle"></span>
                         </div>
+                        <!-- inline ad-creative previews requested by the advisor -->
+                        <template x-if="m.role==='assistant' && m.previews && m.previews.length">
+                          <div class="mt-2 space-y-2">
+                            <template x-for="(p, pi) in m.previews" :key="pi">
+                              <div class="border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                                <div class="px-2 py-1 text-[10px] text-meta-gray-500 border-b border-gray-200 bg-white" x-text="'Ad preview · ' + (p.adName || '')"></div>
+                                <div class="overflow-auto" style="max-height: 360px;" x-html="p.iframe"></div>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
                         <div x-show="m.role==='assistant' && m.model && !m.streaming" class="mt-1.5 flex items-center gap-2">
                           <button @click="_copyText(m.content)" class="text-[10px] text-meta-gray-400 hover:text-indigo-600" title="Copy this answer">copy</button>
                           <span class="text-[10px] text-meta-gray-300" x-text="m.model"></span>

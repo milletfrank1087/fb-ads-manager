@@ -1127,7 +1127,7 @@ function dashboard() {
       this.$nextTick(() => this.scrollChatBottom());
       let asstIdx = -1;
       const ensureAsst = () => {
-        if (asstIdx < 0) { asstIdx = c.messages.push({ role: 'assistant', content: '', model: null, streaming: true }) - 1; }
+        if (asstIdx < 0) { asstIdx = c.messages.push({ role: 'assistant', content: '', model: null, streaming: true, tools: [], previews: [] }) - 1; }
         return asstIdx;
       };
       try {
@@ -1157,6 +1157,18 @@ function dashboard() {
             if (!payload) continue;
             let ev; try { ev = JSON.parse(payload); } catch { continue; }
             if (ev.type === 'delta') { const i = ensureAsst(); c.messages[i].content += ev.text; this.scrollChatBottom(); }
+            else if (ev.type === 'tool') {
+              const m = c.messages[ensureAsst()];
+              if (ev.phase === 'start') {
+                m.tools.push({ name: ev.name, label: this.toolLabel(ev.name, ev.args), status: 'running', summary: '' });
+              } else {
+                const t = [...m.tools].reverse().find((x) => x.name === ev.name && x.status === 'running');
+                if (t) { t.status = ev.ok ? 'done' : 'failed'; t.summary = ev.summary || ''; }
+                else m.tools.push({ name: ev.name, label: this.toolLabel(ev.name, {}), status: ev.ok ? 'done' : 'failed', summary: ev.summary || '' });
+                if (ev.preview && ev.preview.iframe) m.previews.push(ev.preview);
+              }
+              this.scrollChatBottom();
+            }
             else if (ev.type === 'done') { const i = ensureAsst(); c.messages[i].model = ev.model; c.messages[i].streaming = false; }
             else if (ev.type === 'error') { c.error = ev.message || ev.error || 'Advisor unavailable'; }
           }
@@ -1175,6 +1187,19 @@ function dashboard() {
     scrollChatBottom() {
       const el = document.getElementById('advisor-chat-scroll');
       if (el) el.scrollTop = el.scrollHeight;
+    },
+    toolLabel(name, args) {
+      const verbs = {
+        get_fresh_insights: 'Fetching live insights',
+        get_change_history: 'Reading change history',
+        get_ad_preview: 'Loading ad preview',
+        re_analyze: 'Re-analyzing account',
+      };
+      let label = verbs[name] || name;
+      const hint = args && (args.name || (args.level === 'account' ? 'account' : '') || args.window);
+      if (hint) label += ` · ${hint}`;
+      if (args && args.breakdown && args.breakdown !== 'none') label += ` (${args.breakdown})`;
+      return label;
     },
     renderMd(text) {
       const esc = String(text || '')

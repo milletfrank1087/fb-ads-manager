@@ -11,6 +11,7 @@ import * as comments from './lib/comments.js';
 import { autoMod } from './lib/autoMod.js';
 import { analyzerEnabled, suggestReply, strategyNarrative, dailyBriefing, strategyChat, strategyChatStream } from './lib/analyzer.js';
 import { analyzeStrategy, getLastAnalysis, setNarrative, setBriefing } from './lib/strategist.js';
+import { STRATEGY_TOOLS, runStrategyTool } from './lib/strategyTools.js';
 import {
   syncAll as cmSyncAll,
   syncCommentsOnly as cmSyncCommentsOnly,
@@ -334,13 +335,31 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
   const startedAt = Date.now();
   try { store.logStrategyChat({ session_id: sessionId, role: 'user', content: message, window }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
 
+  // Read-only tool wiring: a one-line human summary for the UI chip + the (huge) iframe for previews.
+  const toolSummary = (name, r) => {
+    if (!r || r.ok === false) return r?.message ? `failed: ${String(r.message).slice(0, 120)}` : 'failed';
+    if (name === 'get_fresh_insights') {
+      if (r.rows) return `${r.entity}: ${r.rows.length} ${r.breakdown} rows (${r.window})`;
+      const t = r.totals; return t ? `${r.entity}: $${t.spend} spend, ${t.cpa != null ? 'CPA $' + t.cpa : 'no conv'} (${r.window})` : `${r.entity}: no spend (${r.window})`;
+    }
+    if (name === 'get_change_history') return `${r.scope}: ${r.count} recent change(s)`;
+    if (name === 'get_ad_preview') return `${r.adName} (${r.status}) — ${r.format}`;
+    if (name === 're_analyze') return `re-analyzed ${r.window}: ${r.counts?.activeCampaigns ?? '?'} active campaigns`;
+    return 'done';
+  };
+  const persistTool = (name, args, r) => {
+    try { store.logStrategyChat({ session_id: sessionId, role: 'tool', content: `${name}(${JSON.stringify(args).slice(0, 200)}) -> ${toolSummary(name, r)}`, model: name, window }); } catch {}
+  };
+
   if (!wantStream) {
+    const toolsUsed = [];
+    const onTool = ({ phase, name, args, result }) => { if (phase === 'done') { toolsUsed.push({ name, ok: result?.ok !== false }); persistTool(name, args, result); } };
     try {
-      const { reply, model } = await strategyChat({ message, history, last });
+      const { reply, model } = await strategyChat({ message, history, last, tools: STRATEGY_TOOLS, runTool: runStrategyTool, onTool });
       const elapsedMs = Date.now() - startedAt;
-      log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, elapsedMs, stream: false });
+      log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, tools: toolsUsed.length, elapsedMs, stream: false });
       try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: reply, model, window, elapsed_ms: elapsedMs }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
-      res.json({ ok: true, reply, model });
+      res.json({ ok: true, reply, model, toolsUsed });
     } catch (err) {
       log.warn('strategy.chat.failed', { error: String(err.message || err) });
       try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: '', window, error_message: String(err.message || err) }); } catch {}
@@ -352,12 +371,21 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
   // Streaming (SSE)
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
   const onDelta = (chunk) => { res.write(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`); };
+  const toolsUsed = [];
+  const onTool = ({ phase, name, args, result }) => {
+    if (phase === 'start') { res.write(`data: ${JSON.stringify({ type: 'tool', phase: 'start', name, args })}\n\n`); return; }
+    toolsUsed.push({ name, ok: result?.ok !== false });
+    persistTool(name, args, result);
+    const evt = { type: 'tool', phase: 'done', name, ok: result?.ok !== false, summary: toolSummary(name, result) };
+    if (name === 'get_ad_preview' && result?.ok && result.iframe) evt.preview = { iframe: result.iframe, adName: result.adName };
+    res.write(`data: ${JSON.stringify(evt)}\n\n`);
+  };
   try {
-    const { reply, model } = await strategyChatStream({ message, history, last, onDelta });
+    const { reply, model } = await strategyChatStream({ message, history, last, onDelta, onTool, tools: STRATEGY_TOOLS, runTool: runStrategyTool });
     const elapsedMs = Date.now() - startedAt;
     res.write(`data: ${JSON.stringify({ type: 'done', model })}\n\n`);
     res.end();
-    log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, elapsedMs, stream: true });
+    log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, tools: toolsUsed.length, elapsedMs, stream: true });
     try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: reply, model, window, elapsed_ms: elapsedMs }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
   } catch (err) {
     log.warn('strategy.chat.failed', { error: String(err.message || err), stream: true });

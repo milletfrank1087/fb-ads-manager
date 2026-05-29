@@ -100,97 +100,148 @@ async function runWithFallback(messages, schemaName, schema) {
   throw lastErr || new Error('All OpenRouter models failed');
 }
 
-// Free-form (non-JSON) completion, used by the conversational advisor chat.
-async function callOpenRouterText(model, messages, { maxTokens = 1100, temperature = 0.35 } = {}) {
+// ---------- Conversational advisor: tool-aware completion steps ----------
+// The advisor chat can call read-only tools (defined in strategyTools.js, injected by the server).
+// One "step" = one model call that either (a) returns free-form text, or (b) requests tool calls
+// (finish_reason: "tool_calls"). The orchestrator (runChatAgent) loops: run tools, feed results
+// back, call again — until the model produces a textual answer.
+
+const openRouterHeaders = () => ({
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${config.openrouterApiKey}`,
+  'HTTP-Referer': 'http://localhost:' + config.port,
+  'X-Title': 'GFM Greece strategy advisor',
+});
+
+// Non-streaming step. Returns { text, toolCalls:[{id,name,argsStr}], finishReason }.
+async function callOpenRouterStep(model, messages, { tools, maxTokens = 1100, temperature = 0.35 } = {}) {
   if (!config.openrouterApiKey) throw new Error('OPENROUTER_API_KEY missing — AI disabled.');
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.openrouterApiKey}`,
-      'HTTP-Referer': 'http://localhost:' + config.port,
-      'X-Title': 'GFM Greece strategy advisor',
-    },
-    body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
-  });
+  const body = { model, messages, temperature, max_tokens: maxTokens };
+  if (tools && tools.length) { body.tools = tools; body.tool_choice = 'auto'; }
+  const res = await fetch(`${BASE_URL}/chat/completions`, { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(body) });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const err = new Error(`OpenRouter ${res.status}: ${shortErr(body)}`);
-    err.status = res.status;
-    throw err;
+    const b = await res.text().catch(() => '');
+    const err = new Error(`OpenRouter ${res.status}: ${shortErr(b)}`); err.status = res.status; throw err;
   }
-  return res.json();
+  const json = await res.json();
+  const choice = json?.choices?.[0] || {};
+  const msg = choice.message || {};
+  const toolCalls = (msg.tool_calls || []).map((t) => ({ id: t.id, name: t.function?.name, argsStr: t.function?.arguments || '' }));
+  return { text: msg.content || '', toolCalls, finishReason: choice.finish_reason || null };
 }
 
-// Streaming completion via SSE. Calls onDelta(chunk) per token; resolves with the full text.
-async function streamOpenRouter(model, messages, onDelta, { maxTokens = 1100, temperature = 0.35 } = {}) {
+// Streaming step. Forwards content tokens via onDelta; accumulates tool_call fragments (which arrive
+// as indexed deltas instead of content). Returns { text, toolCalls:[{id,name,argsStr}], finishReason }.
+async function streamOpenRouterStep(model, messages, { tools, onDelta, maxTokens = 1100, temperature = 0.35 } = {}) {
   if (!config.openrouterApiKey) throw new Error('OPENROUTER_API_KEY missing — AI disabled.');
+  const body = { model, messages, temperature, max_tokens: maxTokens, stream: true };
+  if (tools && tools.length) { body.tools = tools; body.tool_choice = 'auto'; }
   const res = await fetch(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.openrouterApiKey}`,
-      'HTTP-Referer': 'http://localhost:' + config.port,
-      'X-Title': 'GFM Greece strategy advisor',
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, stream: true }),
+    method: 'POST', headers: { ...openRouterHeaders(), Accept: 'text/event-stream' }, body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const err = new Error(`OpenRouter ${res.status}: ${shortErr(body)}`);
-    err.status = res.status;
-    throw err;
+    const b = await res.text().catch(() => '');
+    const err = new Error(`OpenRouter ${res.status}: ${shortErr(b)}`); err.status = res.status; throw err;
   }
-  if (!res.body || typeof res.body.getReader !== 'function') {
-    const err = new Error('Streaming not supported by runtime'); err.status = 500; throw err;
-  }
+  if (!res.body || typeof res.body.getReader !== 'function') { const e = new Error('Streaming not supported by runtime'); e.status = 500; throw e; }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let buf = ''; let full = '';
+  let buf = ''; let full = ''; let finishReason = null;
+  const tc = new Map(); // index -> { id, name, argsStr }
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     const lines = buf.split('\n');
-    buf = lines.pop() ?? ''; // keep the trailing partial line
+    buf = lines.pop() ?? '';
     for (const line of lines) {
       const t = line.trim();
-      if (!t || t.startsWith(':') || !t.startsWith('data:')) continue; // skip SSE comments/keepalives
+      if (!t || t.startsWith(':') || !t.startsWith('data:')) continue;
       const data = t.slice(5).trim();
       if (data === '[DONE]') continue;
       try {
         const json = JSON.parse(data);
-        const delta = json?.choices?.[0]?.delta?.content;
-        if (delta) { full += delta; onDelta(delta); }
-      } catch { /* partial JSON across chunks — ignore, next read completes it */ }
+        const choice = json?.choices?.[0];
+        if (!choice) continue;
+        if (choice.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice.delta || {};
+        if (delta.content) { full += delta.content; if (onDelta) onDelta(delta.content); }
+        for (const call of delta.tool_calls || []) {
+          const i = call.index ?? 0;
+          const cur = tc.get(i) || { id: '', name: '', argsStr: '' };
+          if (call.id) cur.id = call.id;
+          if (call.function?.name) cur.name = call.function.name;
+          if (call.function?.arguments) cur.argsStr += call.function.arguments;
+          tc.set(i, cur);
+        }
+      } catch { /* partial JSON across chunks — next read completes it */ }
     }
   }
-  return { text: full, model };
+  const toolCalls = [...tc.values()].filter((c) => c.name);
+  return { text: full, toolCalls, finishReason };
 }
 
-async function runChatWithFallback(messages, opts) {
+// Orchestrates a multi-step tool-using chat turn. Streams the FINAL textual answer via onDelta
+// (tool-request steps emit no content, so the user only ever sees the answer). Read-only tools
+// auto-run; onTool({phase,name,args,result}) surfaces activity to the UI.
+async function runChatAgent({ messages, tools, runTool, onDelta, onTool, maxTokens = 1100, temperature = 0.35, maxIters = 4 }) {
   const models = [config.openrouterModel, config.openrouterFallbackModel].filter((m, i, a) => m && a.indexOf(m) === i);
-  let lastErr;
-  for (let mi = 0; mi < models.length; mi += 1) {
-    const model = models[mi];
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const useTools = Array.isArray(tools) && tools.length && typeof runTool === 'function';
+  const streaming = typeof onDelta === 'function';
+  const toolsUsed = [];
+  let contentStarted = false; // once answer tokens stream, we cannot safely switch models
+  let modelUsed = models[0];
+  const wrappedDelta = streaming ? (d) => { contentStarted = true; onDelta(d); } : undefined;
+
+  const step = async (msgs, includeTools) => {
+    let lastErr;
+    for (let mi = 0; mi < models.length; mi += 1) {
       try {
-        const json = await callOpenRouterText(model, messages, opts);
-        const text = json?.choices?.[0]?.message?.content;
-        if (!text || !String(text).trim()) { const e = new Error('Empty response from model'); e.status = 502; throw e; }
-        return { text: String(text).trim(), model };
+        const opts = { tools: includeTools ? tools : undefined, maxTokens, temperature };
+        const res = streaming
+          ? await streamOpenRouterStep(models[mi], msgs, { ...opts, onDelta: wrappedDelta })
+          : await callOpenRouterStep(models[mi], msgs, opts);
+        modelUsed = models[mi];
+        return res;
       } catch (err) {
         lastErr = err;
-        const { transient } = classifyError(err.status, err.message);
-        if (!transient) break;
-        if (attempt === 3) break;
-        await sleep(700 * attempt + Math.random() * 250);
+        if (contentStarted) throw err; // mid-answer — a retry would duplicate text
+        if (mi < models.length - 1) { log.warn('analyzer.chat.agent.fallback', { from: models[mi], to: models[mi + 1], err: shortErr(err.message) }); continue; }
+        throw err;
       }
     }
-    if (mi < models.length - 1) log.warn('analyzer.chat.fallback', { from: model, to: models[mi + 1] });
+    throw lastErr;
+  };
+
+  for (let iter = 0; iter < maxIters; iter += 1) {
+    const res = await step(messages, useTools);
+    if (useTools && res.toolCalls && res.toolCalls.length) {
+      messages.push({
+        role: 'assistant',
+        content: res.text || null,
+        tool_calls: res.toolCalls.map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.argsStr || '{}' } })),
+      });
+      for (const call of res.toolCalls) {
+        let args = {};
+        try { args = call.argsStr ? JSON.parse(call.argsStr) : {}; } catch { args = {}; }
+        if (onTool) onTool({ phase: 'start', name: call.name, args });
+        const { result, content } = await runTool(call.name, args);
+        toolsUsed.push({ name: call.name, args, ok: result?.ok !== false });
+        if (onTool) onTool({ phase: 'done', name: call.name, args, result });
+        messages.push({ role: 'tool', tool_call_id: call.id, content });
+      }
+      continue;
+    }
+    const text = (res.text || '').trim();
+    if (text) return { reply: text, model: modelUsed, toolsUsed };
+    if (!useTools) { const e = new Error('Empty response from model'); e.status = 502; throw e; }
+    // empty + no tool calls: nudge once for a final answer
+    break;
   }
-  throw lastErr || new Error('All OpenRouter models failed');
+
+  const finalRes = await step([...messages, { role: 'system', content: 'Give your final answer to the operator now, grounded in the tool results above. Do not call any more tools.' }], false);
+  const text = (finalRes.text || '').trim() || 'I fetched the data but could not compose a final answer — please re-ask.';
+  return { reply: text, model: modelUsed, toolsUsed };
 }
 
 // ---------- Prompts & schemas ----------
@@ -744,6 +795,13 @@ YOU ALSO RECEIVE A LIVE DATA SNAPSHOT (the same decision digest + strategist sum
 - today / trend7 (incl. CPM + earlySaturation) / concentration / dayparting / creative / saturation / segments {gender,age,platform,...} / signal (CAPI) / growth (funnel, abandoner pool, headroom, value readiness, ranked levers).
 - campaigns/adsets (strategist summary): names, status, spend, kpiCpa, kpiCount (conversions in window), roas, frequency.
 
+TOOLS (read-only — call them when the snapshot is not enough; they never change anything in Meta):
+- get_fresh_insights(level, name?, window?, breakdown?): pull LIVE numbers for the account / a campaign / an ad set, optionally segmented (age_gender, country, platform, placement, device, hourly). Use it when the operator asks about current/today's numbers, a specific entity, or a segment the snapshot doesn't break out — don't guess from a stale snapshot.
+- get_change_history(name?, limit?): recent edits (budget/status/targeting, who & when). Use to check "what changed before X" or whether a recent edit reset learning.
+- get_ad_preview(name): renders the actual creative inline for the operator. Use when discussing a creative refresh.
+- re_analyze(window?): refresh the whole snapshot. Slower — prefer get_fresh_insights for one entity.
+When you call a tool, fetch FIRST, then answer using the returned numbers (cite them). Prefer one targeted tool call over many. If a question is fully answerable from the snapshot, just answer — don't call a tool needlessly.
+
 HOW TO ANSWER:
 - Be a concrete, practical operator — give the actual NUMBER and the STRUCTURE, not vague advice. If they ask for a cost cap, compute a starting value from THIS entity's numbers in the snapshot (e.g. cap ≈ current cost-per-result × ~1.1-1.2 as a ceiling), name the entity, and lay out the steps (duplicate the ad set → set the cap on the COPY → keep the live winner on Lowest Cost → watch delivery 48-72h → revert if it stalls). Quote the entity's current CPA/volume from the snapshot.
 - Respect the gates. Cost/Bid Cap is only sane on an entity above ~50 conv/week (the snapshot's kpiCount is per-window — convert to weekly). Below that, say plainly that a cap will starve delivery and recommend Lowest Cost. Value Optimization needs CAPI + ~50-100 purchases/wk. Don't recommend a gated move as if it were ready.
@@ -794,35 +852,20 @@ function buildChatMessages({ message, history = [], last }) {
   ];
 }
 
-export async function strategyChat({ message, history = [], last }) {
+// Non-streaming (used by scripts/curl). Supports the same read-only tool loop.
+export async function strategyChat({ message, history = [], last, tools, runTool, onTool }) {
   const messages = buildChatMessages({ message, history, last });
-  const { text, model } = await runChatWithFallback(messages, { maxTokens: 1100, temperature: 0.35 });
-  return { reply: text, model };
+  const { reply, model, toolsUsed } = await runChatAgent({ messages, tools, runTool, onTool, maxTokens: 1100, temperature: 0.35 });
+  return { reply, model, toolsUsed };
 }
 
-// Streaming variant: invokes onDelta(textChunk) as tokens arrive, returns the full reply at the end.
-// Falls back to the secondary model only if the primary fails BEFORE emitting any token (so the
-// client never sees a duplicated/partial answer stitched from two models).
-export async function strategyChatStream({ message, history = [], last, onDelta }) {
+// Streaming variant: invokes onDelta(textChunk) as the FINAL answer tokens arrive (tool-request
+// steps stream nothing), and onTool(...) as read-only tools run. Falls back to the secondary model
+// only before any answer token has streamed.
+export async function strategyChatStream({ message, history = [], last, onDelta, onTool, tools, runTool }) {
   const messages = buildChatMessages({ message, history, last });
-  const models = [config.openrouterModel, config.openrouterFallbackModel].filter((m, i, a) => m && a.indexOf(m) === i);
-  let lastErr;
-  for (let mi = 0; mi < models.length; mi += 1) {
-    let emitted = false;
-    const wrap = (d) => { emitted = true; if (onDelta) onDelta(d); };
-    try {
-      const { text } = await streamOpenRouter(models[mi], messages, wrap, { maxTokens: 1100, temperature: 0.35 });
-      if (!text || !text.trim()) { const e = new Error('Empty response from model'); e.status = 502; throw e; }
-      return { reply: text, model: models[mi] };
-    } catch (err) {
-      lastErr = err;
-      if (emitted) break; // tokens already streamed — cannot safely retry on another model
-      const { transient } = classifyError(err.status, err.message);
-      if (!transient && mi === 0 && models.length > 1) { log.warn('analyzer.chat.stream.fallback', { from: models[mi], to: models[mi + 1] }); continue; }
-      if (mi < models.length - 1) { log.warn('analyzer.chat.stream.fallback', { from: models[mi], to: models[mi + 1] }); continue; }
-    }
-  }
-  throw lastErr || new Error('All OpenRouter models failed (stream)');
+  const { reply, model, toolsUsed } = await runChatAgent({ messages, tools, runTool, onDelta, onTool, maxTokens: 1100, temperature: 0.35 });
+  return { reply, model, toolsUsed };
 }
 
 export async function suggestReply({ comment, analysis, postCtx, thread }) {
