@@ -575,7 +575,7 @@ const BRIEFING_SCHEMA = {
 export async function dailyBriefing(digest) {
   const messages = [
     { role: 'system', content: BRIEFING_SYSTEM_PROMPT },
-    { role: 'user', content: [{ type: 'text', text: `DECISION DIGEST (JSON):\n${JSON.stringify(digest).slice(0, 20000)}` }] },
+    { role: 'user', content: [{ type: 'text', text: `DECISION DIGEST (JSON):\n${JSON.stringify(digest).slice(0, 28000)}` }] },
   ];
   const { parsed, model } = await runWithFallback(messages, 'daily_briefing', BRIEFING_SCHEMA);
   if (!parsed || typeof parsed !== 'object') throw new Error('Invalid daily briefing JSON');

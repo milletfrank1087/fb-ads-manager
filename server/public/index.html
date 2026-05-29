@@ -929,6 +929,17 @@
                   </div>
                 </template>
 
+                <!-- dayparting -->
+                <template x-if="d.dayparting && d.dayparting.reliable">
+                  <div class="rounded-lg border border-gray-200 bg-white p-3 flex items-start gap-3" title="Day-of-week / time-of-day performance over up to 90 days (widened for sample size). At low volume treat this as a gentle budget lean toward strong days, not a hard on/off schedule.">
+                    <span class="mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border bg-indigo-50 text-indigo-700 border-indigo-200 flex-shrink-0">dayparting</span>
+                    <div class="flex-1 min-w-0">
+                      <div class="text-sm font-medium">When to lean your budget</div>
+                      <div class="text-[12px] text-meta-gray-600 mt-0.5" x-text="d.dayparting.note"></div>
+                    </div>
+                  </div>
+                </template>
+
                 <!-- AI daily briefing -->
                 <div class="bg-white rounded-lg border border-indigo-200 overflow-hidden">
                   <div class="px-4 py-2 bg-indigo-50 border-b border-indigo-100 flex items-center gap-2">
@@ -1014,6 +1025,11 @@
                             <span x-show="z.campaignName" class="text-[10px] text-meta-gray-400" x-text="z.campaignName"></span>
                           </div>
                           <div class="text-[12px] text-meta-gray-600 mt-0.5" x-text="z.rationale"></div>
+                          <div x-show="z.wow && (z.wow.cpaChangePct!=null || z.wow.roasChangePct!=null)" class="flex items-center gap-2 mt-1 text-[11px]" title="Week-over-week: last 7 days vs the prior 7 days for this campaign.">
+                            <span class="text-meta-gray-400">7d WoW:</span>
+                            <span x-show="z.wow && z.wow.cpaChangePct!=null">cost/<span x-text="d.kpi"></span> <span :class="(z.wow&&z.wow.cpaChangePct||0)>0?'text-red-600':'text-green-600'" x-text="fmtPctSigned(z.wow&&z.wow.cpaChangePct)"></span></span>
+                            <span x-show="z.wow && z.wow.roasChangePct!=null">· ROAS <span :class="(z.wow&&z.wow.roasChangePct||0)<0?'text-red-600':'text-green-600'" x-text="fmtPctSigned(z.wow&&z.wow.roasChangePct)"></span></span>
+                          </div>
                           <div x-show="z.whatToWaitFor" class="text-[11px] text-yellow-700 mt-1" x-text="'⏳ ' + z.whatToWaitFor"></div>
                         </div>
                       </div>

@@ -316,6 +316,7 @@ export async function analyzeStrategy({ window = 'last_30d' } = {}) {
       kpi, totals, campaigns, adsets, medianRoas, medianKpiCpa,
       sortedDaily, campDailyRows, adRankingRows, reachWindows,
       ageGenderRows, placementRows, countryRows, deviceRows,
+      weekday, hourly,
       capiDetected: null, // dataset_quality came back empty for this account; surfaced as advisory
     });
   } catch (e) {

@@ -119,6 +119,34 @@ function buildTrend7(sortedDaily, kpi) {
   };
 }
 
+// Dayparting (weekday + hour) — compact, confidence-gated read for the daily check-in.
+// Reuses the strategist's already-computed weekday/hour patterns (they carry their own `reliable`
+// flag based on conversion volume), and only surfaces a recommendation when best≠worst.
+function buildDayparting(weekday, hourly) {
+  const out = { reliable: false, weekday: null, hour: null, note: null };
+  if (weekday?.reliable && weekday.best && weekday.worst && weekday.best.day !== weekday.worst.day) {
+    out.reliable = true;
+    out.weekday = {
+      best: weekday.best.day, bestLabel: weekday.best.valueLabel,
+      worst: weekday.worst.day, worstLabel: weekday.worst.valueLabel,
+      metric: weekday.metricLabel,
+    };
+  }
+  if (hourly?.reliable && hourly.best && hourly.worst && hourly.best.hour !== hourly.worst.hour) {
+    out.reliable = true;
+    const hr = (h) => (h || '').split(' ')[0]?.slice(0, 5) || h;
+    out.hour = { best: hr(hourly.best.hour), worst: hr(hourly.worst.hour) };
+  }
+  if (out.weekday) {
+    out.note = `${out.weekday.best} is the best day (${out.weekday.best && out.weekday.bestLabel}), ${out.weekday.worst} the worst. Gently weight budget toward ${out.weekday.best} — don't hard on/off schedule at this volume.`;
+  } else if (out.hour) {
+    out.note = `Best hours cluster around ${out.hour.best}, weakest around ${out.hour.worst}. Treat as a gentle bid/budget lean, not a hard schedule.`;
+  } else {
+    out.note = 'Not enough per-day/hour conversions to trust a dayparting pattern yet.';
+  }
+  return out;
+}
+
 // Concentration risk (per playbook counter-point): one campaign carrying too much of account spend
 // is one fatigue cycle from a step-function "saturation cliff". Flag when any active campaign >40%.
 function buildConcentration(campaigns) {
@@ -390,9 +418,10 @@ function capGraduationFlags(adsets, kpi) {
 
 export function buildDecisionDigest(ctx) {
   const {
-    kpi, totals, campaigns, adsets, medianRoas, medianKpiCpa,
-    sortedDaily, campDailyRows, adRankingRows, reachWindows,
-    ageGenderRows, placementRows, countryRows = [], deviceRows = [], capiDetected,
+    kpi, totals = {}, campaigns = [], adsets = [], medianRoas, medianKpiCpa,
+    sortedDaily = [], campDailyRows = [], adRankingRows = [], reachWindows,
+    ageGenderRows = [], placementRows = [], countryRows = [], deviceRows = [],
+    weekday = null, hourly = null, capiDetected,
   } = ctx;
 
   // Segment verdicts compare each cell to the ACCOUNT-BLENDED CPA (spend/conversions across the
@@ -411,11 +440,14 @@ export function buildDecisionDigest(ctx) {
   const segments = {
     ageGender: buildSegments(ageGenderRows, kpi, segmentBaselineCpa, (r) => `${r.age || '?'} · ${r.gender || '?'}`),
     placement: buildSegments(placementRows, kpi, segmentBaselineCpa, (r) => `${r.publisher_platform || '?'} · ${(r.platform_position || '').replace(/_/g, ' ')}`.trim()),
-    country: buildSegments(countryRows, kpi, segmentBaselineCpa, (r) => r.country || '?'),
+    // Country can be 40+ rows (one per country reached); cap to the top 15 by spend so it neither
+    // bloats the AI prompt (truncated at a char budget) nor the UI. UI only renders the top 6 anyway.
+    country: buildSegments(countryRows, kpi, segmentBaselineCpa, (r) => r.country || '?').slice(0, 15),
     device: buildSegments(deviceRows, kpi, segmentBaselineCpa, (r) => (r.impression_device || '?').replace(/_/g, ' ')),
   };
 
   const concentration = buildConcentration(campaigns);
+  const dayparting = buildDayparting(weekday, hourly);
 
   const entityDecisions = campaignDecisions({ campaigns, campDailyRows, kpi, medianRoas, medianKpiCpa, creativeByCampaign });
   // NOTE: country is intentionally excluded from targeting ACTIONS — this account runs one campaign
@@ -443,17 +475,21 @@ export function buildDecisionDigest(ctx) {
     return (b.confidenceScore || 0) - (a.confidenceScore || 0);
   });
 
+  // Key order matters: JSON.stringify preserves insertion order and the AI prompt is truncated to a
+  // char budget, so the most decision-critical fields are serialized FIRST and the verbose `segments`
+  // table LAST — if anything gets cut it's the least important data, never the actual decisions.
   return {
     generatedAt: new Date().toISOString(),
     kpi: kpi.label,
     baselineCpa: round(segmentBaselineCpa),
     medianCampaignCpa: round(medianKpiCpa),
-    today, trend7, saturation, signal, creative, segments, concentration,
-    decisions: all,
     counts: {
       actionable: all.filter((d) => !['hold', 'watch'].includes(d.action)).length,
       highConfidence: all.filter((d) => d.confidence?.tier === 'high').length,
       watch: all.filter((d) => d.action === 'watch').length,
     },
+    decisions: all,
+    today, trend7, concentration, dayparting, creative, saturation, signal,
+    segments,
   };
 }
