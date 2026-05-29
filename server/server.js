@@ -9,7 +9,7 @@ import { store } from './lib/store.js';
 import { pageToken } from './lib/pageToken.js';
 import * as comments from './lib/comments.js';
 import { autoMod } from './lib/autoMod.js';
-import { analyzerEnabled, suggestReply, strategyNarrative, dailyBriefing } from './lib/analyzer.js';
+import { analyzerEnabled, suggestReply, strategyNarrative, dailyBriefing, strategyChat } from './lib/analyzer.js';
 import { analyzeStrategy, getLastAnalysis, setNarrative, setBriefing } from './lib/strategist.js';
 import {
   syncAll as cmSyncAll,
@@ -305,6 +305,29 @@ app.post('/api/strategy/briefing', ah(async (req, res) => {
   } catch (err) {
     log.warn('strategy.briefing.failed', { error: String(err.message || err) });
     res.status(502).json({ ok: false, error: 'briefing_failed', message: String(err.message || err) });
+  }
+}));
+
+// Conversational advisor — free-form Q&A grounded in the last analysis snapshot (digest + campaigns +
+// ad sets) and the community playbook. Multi-turn: client sends {message, history:[{role,content}]}.
+app.post('/api/strategy/chat', ah(async (req, res) => {
+  if (!analyzerEnabled()) {
+    return res.status(503).json({ ok: false, error: 'ai_disabled', message: 'AI is disabled (no OPENROUTER_API_KEY).' });
+  }
+  const message = (req.body?.message || '').toString().trim();
+  if (!message) return res.status(400).json({ ok: false, error: 'empty_message', message: 'message is required.' });
+  const last = getLastAnalysis();
+  if (!last?.decisions && !last?.campaigns) {
+    return res.status(409).json({ ok: false, error: 'no_analysis', message: 'Run /api/strategy/analyze first so the advisor has data to reason over.' });
+  }
+  const history = Array.isArray(req.body?.history) ? req.body.history : [];
+  try {
+    const { reply, model } = await strategyChat({ message, history, last });
+    log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length });
+    res.json({ ok: true, reply, model });
+  } catch (err) {
+    log.warn('strategy.chat.failed', { error: String(err.message || err) });
+    res.status(502).json({ ok: false, error: 'chat_failed', message: String(err.message || err) });
   }
 }));
 

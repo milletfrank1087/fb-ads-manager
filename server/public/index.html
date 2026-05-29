@@ -836,6 +836,12 @@
                     title="Full window analysis: account totals, AI weekly plan, ranked rule-based actions, and day/hour/placement/age-gender patterns over the selected window.">
               Full Analysis
             </button>
+            <button @click="setStrategyTab('chat')"
+                    :class="strategy.tab==='chat' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-meta-gray-600 hover:text-meta-gray-800'"
+                    class="px-3 py-2 text-xs font-semibold border-b-2 -mb-px"
+                    title="Ask the advisor anything about your account. It is briefed with the same live data (campaigns, ad sets, budgets, the decision digest) and the community playbook — so it can give you the exact number and structure (e.g. 'what cost cap should I set on Portugal and how?'). Suggest-only.">
+              Ask Advisor
+            </button>
           </div>
 
           <!-- body -->
@@ -1458,6 +1464,74 @@
 
                 <div class="text-[10px] text-meta-gray-400 text-center pt-1">
                   Generated <span x-text="new Date(strategy.data.generatedAt).toLocaleString()"></span> · window <span x-text="strategy.data.window"></span> · patterns up to <span x-text="strategy.data.dailyWindow"></span> · numbers use Meta's default attribution (matches the dashboard). Suggest-only — nothing here changes your ads.
+                </div>
+              </div>
+            </template>
+
+            <!-- ============ ASK ADVISOR (CHAT) TAB ============ -->
+            <template x-if="strategy.tab==='chat'">
+              <div class="flex flex-col" style="height: 100%; min-height: 420px;">
+                <!-- messages scroll area -->
+                <div id="advisor-chat-scroll" class="flex-1 overflow-y-auto space-y-3 pr-1">
+                  <!-- empty / intro state -->
+                  <template x-if="!strategy.chat.messages.length">
+                    <div class="text-center text-meta-gray-600 py-6">
+                      <div class="w-10 h-10 mx-auto rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center mb-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                      </div>
+                      <div class="text-sm font-semibold text-meta-gray-800">Ask the advisor</div>
+                      <div class="text-[12px] text-meta-gray-500 max-w-md mx-auto mt-1">It's briefed with this account's live data — campaigns, ad sets, budgets, the decision digest and growth funnel — plus the community playbook. Ask for the exact number and structure. Suggest-only.</div>
+                      <div class="flex flex-wrap justify-center gap-2 mt-4">
+                        <template x-for="(q, i) in advisorSuggestions" :key="i">
+                          <button @click="chatSuggest(q)" :disabled="!strategy.data || strategy.chat.loading"
+                                  class="text-[12px] px-3 py-1.5 rounded-full border border-indigo-200 text-indigo-700 bg-indigo-50/60 hover:bg-indigo-100 disabled:opacity-50"
+                                  x-text="q"></button>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- messages -->
+                  <template x-for="(m, i) in strategy.chat.messages" :key="i">
+                    <div :class="m.role==='user' ? 'flex justify-end' : 'flex justify-start'">
+                      <div :class="m.role==='user' ? 'bg-indigo-600 text-white rounded-2xl rounded-br-sm px-3.5 py-2 max-w-[80%]' : 'bg-white border border-gray-200 text-meta-gray-800 rounded-2xl rounded-bl-sm px-3.5 py-2.5 max-w-[88%]'">
+                        <div x-show="m.role==='user'" class="text-[13px] whitespace-pre-wrap" x-text="m.content"></div>
+                        <div x-show="m.role==='assistant'" class="text-[13px] leading-relaxed advisor-md" x-html="renderMd(m.content)"></div>
+                        <div x-show="m.role==='assistant' && m.model" class="mt-1.5 flex items-center gap-2">
+                          <button @click="_copyText(m.content)" class="text-[10px] text-meta-gray-400 hover:text-indigo-600" title="Copy this answer">copy</button>
+                          <span class="text-[10px] text-meta-gray-300" x-text="m.model"></span>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- typing indicator -->
+                  <template x-if="strategy.chat.loading">
+                    <div class="flex justify-start">
+                      <div class="bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 text-meta-gray-500 text-[13px] flex items-center gap-2">
+                        <svg class="w-4 h-4 animate-spin text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        thinking…
+                      </div>
+                    </div>
+                  </template>
+
+                  <template x-if="strategy.chat.error">
+                    <div class="bg-red-50 border border-red-200 text-red-700 text-[12px] rounded-lg p-3" x-text="strategy.chat.error"></div>
+                  </template>
+                </div>
+
+                <!-- input bar -->
+                <div class="flex-shrink-0 pt-3 mt-2 border-t border-gray-200">
+                  <div class="flex items-end gap-2">
+                    <textarea x-model="strategy.chat.input" rows="1"
+                              @keydown.enter.prevent="if (!$event.shiftKey) sendChat()"
+                              :disabled="strategy.chat.loading"
+                              placeholder="Ask about budgets, caps, audiences, scaling, the funnel…"
+                              class="flex-1 resize-none text-[13px] border border-gray-300 rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-300 max-h-32"></textarea>
+                    <button @click="sendChat()" :disabled="strategy.chat.loading || !strategy.chat.input.trim()"
+                            class="flex-shrink-0 bg-indigo-600 text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-indigo-700 disabled:opacity-50">Send</button>
+                  </div>
+                  <div class="text-[10px] text-meta-gray-400 mt-1.5 text-center">Grounded in your last analysis (<span x-text="strategy.data ? strategy.data.window : '—'"></span>) · suggest-only, it never changes your ads · Enter to send, Shift+Enter for newline</div>
                 </div>
               </div>
             </template>

@@ -100,6 +100,52 @@ async function runWithFallback(messages, schemaName, schema) {
   throw lastErr || new Error('All OpenRouter models failed');
 }
 
+// Free-form (non-JSON) completion, used by the conversational advisor chat.
+async function callOpenRouterText(model, messages, { maxTokens = 1100, temperature = 0.35 } = {}) {
+  if (!config.openrouterApiKey) throw new Error('OPENROUTER_API_KEY missing — AI disabled.');
+  const res = await fetch(`${BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.openrouterApiKey}`,
+      'HTTP-Referer': 'http://localhost:' + config.port,
+      'X-Title': 'GFM Greece strategy advisor',
+    },
+    body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`OpenRouter ${res.status}: ${shortErr(body)}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+async function runChatWithFallback(messages, opts) {
+  const models = [config.openrouterModel, config.openrouterFallbackModel].filter((m, i, a) => m && a.indexOf(m) === i);
+  let lastErr;
+  for (let mi = 0; mi < models.length; mi += 1) {
+    const model = models[mi];
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const json = await callOpenRouterText(model, messages, opts);
+        const text = json?.choices?.[0]?.message?.content;
+        if (!text || !String(text).trim()) { const e = new Error('Empty response from model'); e.status = 502; throw e; }
+        return { text: String(text).trim(), model };
+      } catch (err) {
+        lastErr = err;
+        const { transient } = classifyError(err.status, err.message);
+        if (!transient) break;
+        if (attempt === 3) break;
+        await sleep(700 * attempt + Math.random() * 250);
+      }
+    }
+    if (mi < models.length - 1) log.warn('analyzer.chat.fallback', { from: model, to: models[mi + 1] });
+  }
+  throw lastErr || new Error('All OpenRouter models failed');
+}
+
 // ---------- Prompts & schemas ----------
 
 const COMMENT_SYSTEM_PROMPT = `You are a content-moderation analyst for a Facebook ad-post operator deciding whether to HIDE/DELETE comments or KEEP them.
@@ -640,6 +686,67 @@ export async function dailyBriefing(digest) {
     },
     model,
   };
+}
+
+const CHAT_SYSTEM_PROMPT = `You are the GFM Greece media-buying advisor, in an interactive chat with the account operator. They run a LOW-BUDGET, all-ABO, medical-fundraising Meta ad account (typically ONE campaign per beneficiary per country, ~$20-100/day each, optimizing for donations/purchases). They will ask follow-up questions about the analysis you produced — e.g. "what cost-cap price should I set and how do I structure it?", "which lookalike first?", "is Portugal safe to scale?".
+
+${COMMUNITY_PLAYBOOK}
+
+YOU ALSO RECEIVE A LIVE DATA SNAPSHOT (the same decision digest + strategist summary behind the dashboard). It is the ground truth. Field guide:
+- decisions[]: per-entity + targeting candidates, each with action, confidence {tier,score}, rationale, and (campaigns) wow = last-7d vs prior-7d {cpaChangePct, roasChangePct}.
+- today / trend7 (incl. CPM + earlySaturation) / concentration / dayparting / creative / saturation / segments {gender,age,platform,...} / signal (CAPI) / growth (funnel, abandoner pool, headroom, value readiness, ranked levers).
+- campaigns/adsets (strategist summary): names, status, spend, kpiCpa, kpiCount (conversions in window), roas, frequency.
+
+HOW TO ANSWER:
+- Be a concrete, practical operator — give the actual NUMBER and the STRUCTURE, not vague advice. If they ask for a cost cap, compute a starting value from THIS entity's numbers in the snapshot (e.g. cap ≈ current cost-per-result × ~1.1-1.2 as a ceiling), name the entity, and lay out the steps (duplicate the ad set → set the cap on the COPY → keep the live winner on Lowest Cost → watch delivery 48-72h → revert if it stalls). Quote the entity's current CPA/volume from the snapshot.
+- Respect the gates. Cost/Bid Cap is only sane on an entity above ~50 conv/week (the snapshot's kpiCount is per-window — convert to weekly). Below that, say plainly that a cap will starve delivery and recommend Lowest Cost. Value Optimization needs CAPI + ~50-100 purchases/wk. Don't recommend a gated move as if it were ready.
+- Always SUGGEST ONLY — you never make changes; the operator applies them manually in Meta. Frame as recommendations and call out the risk + the revert condition.
+- Ground every number in the snapshot. NEVER invent campaigns, metrics, audiences, or competitor data. If the snapshot lacks something, say it's unknown and what you'd need.
+- Prefer ONE clear recommendation over a laundry list. Sequence changes (apply one, re-measure) — never tell them to stack five edits at once (it resets learning).
+- Keep it tight and skimmable: short paragraphs or a few bullets, plain English, no fluff. Use the donation context (variable donation sizes, one pixel shared across beneficiaries = a strong lookalike seed).`;
+
+function chatContextBlock(last) {
+  if (!last) return 'No analysis snapshot is loaded — run an analysis first.';
+  const parts = [];
+  const acct = {
+    kpi: last.kpi?.label, window: last.window, days: last.days,
+    totals: last.totals, medianKpiCpa: last.medianKpiCpa, medianRoas: last.medianRoas,
+  };
+  parts.push(`ACCOUNT (JSON):\n${JSON.stringify(acct)}`);
+  if (Array.isArray(last.campaigns)) {
+    const camps = last.campaigns.slice(0, 30).map((c) => ({
+      name: c.name, status: c.status, objective: c.objective, bidStrategy: c.bidStrategy,
+      spend: c.spend, kpiCount: c.kpiCount, kpiCpa: c.kpiCpa, roas: c.roas, cpm: c.cpm, frequency: c.frequency,
+    }));
+    parts.push(`CAMPAIGNS (JSON):\n${JSON.stringify(camps).slice(0, 7000)}`);
+  }
+  // Ad sets carry the budget + weekly volume — essential for cost-cap / scaling answers on an ABO account.
+  if (Array.isArray(last.adsets)) {
+    const sets = last.adsets.filter((a) => a.status === 'ACTIVE').slice(0, 40).map((a) => ({
+      name: a.name, campaign: a.campaignName, optimizationGoal: a.optimizationGoal,
+      dailyBudget: a.dailyBudget, lifetimeBudget: a.lifetimeBudget,
+      spend: a.spend, kpiCount: a.kpiCount, weeklyEvents: a.weeklyEvents, kpiCpa: a.kpiCpa,
+      roas: a.roas, frequency: a.frequency, minDailyToExit: a.minDailyToExit, learningLimited: a.learningLimited,
+    }));
+    parts.push(`ACTIVE AD SETS (JSON):\n${JSON.stringify(sets).slice(0, 8000)}`);
+  }
+  if (last.decisions) parts.push(`DECISION DIGEST (JSON):\n${JSON.stringify(last.decisions).slice(0, 14000)}`);
+  return parts.join('\n\n');
+}
+
+export async function strategyChat({ message, history = [], last }) {
+  const turns = (Array.isArray(history) ? history : [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
+    .slice(-10)
+    .map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
+  const messages = [
+    { role: 'system', content: CHAT_SYSTEM_PROMPT },
+    { role: 'system', content: `LIVE DATA SNAPSHOT (window: ${last?.digest?.window || last?.window || 'recent'}):\n${chatContextBlock(last)}` },
+    ...turns,
+    { role: 'user', content: String(message).slice(0, 4000) },
+  ];
+  const { text, model } = await runChatWithFallback(messages, { maxTokens: 1100, temperature: 0.35 });
+  return { reply: text, model };
 }
 
 export async function suggestReply({ comment, analysis, postCtx, thread }) {

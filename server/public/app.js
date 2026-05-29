@@ -253,6 +253,7 @@ function dashboard() {
       briefing: null,
       copied: false,
       error: '',
+      chat: { messages: [], input: '', loading: false, error: '' },
     },
     strategyWindows: [
       { id: 'last_7d', label: 'Last 7 days' },
@@ -260,6 +261,12 @@ function dashboard() {
       { id: 'last_28d', label: 'Last 28 days' },
       { id: 'last_30d', label: 'Last 30 days' },
       { id: 'last_90d', label: 'Last 90 days' },
+    ],
+    advisorSuggestions: [
+      'What cost cap should I set on my best ad set, and how do I structure it?',
+      'Which lookalike audience should I launch first, and how do I build it?',
+      'Where am I losing the most donations in the funnel?',
+      'Which campaign is safe to scale right now, and by how much?',
     ],
 
     get canManage() {
@@ -1042,8 +1049,8 @@ function dashboard() {
       if (!this.strategy.data) return;
       if (this.strategy.tab === 'briefing') {
         if (!this.strategy.briefing && !this.strategy.briefingLoading) this.runBriefing();
-      } else if (!this.strategy.narrative && !this.strategy.aiLoading) {
-        this.runStrategyNarrative();
+      } else if (this.strategy.tab === 'analysis') {
+        if (!this.strategy.narrative && !this.strategy.aiLoading) this.runStrategyNarrative();
       }
     },
     setStrategyWindow(w) {
@@ -1103,6 +1110,71 @@ function dashboard() {
       if (b.do_not_act && b.do_not_act.length) { lines.push("DON'T OVERREACT TO:"); b.do_not_act.forEach((n) => lines.push(`- ${n}`)); lines.push(''); }
       if (b.growth_moves && b.growth_moves.length) { lines.push('GROWTH MOVES:'); b.growth_moves.forEach((g) => lines.push(`- [${g.impact}/${g.effort}] ${g.title} — ${g.why}`)); }
       const text = lines.join('\n').trim();
+      this._copyText(text);
+    },
+    chatSuggest(q) { this.strategy.chat.input = q; this.sendChat(); },
+    async sendChat() {
+      const c = this.strategy.chat;
+      const message = (c.input || '').trim();
+      if (!message || c.loading) return;
+      if (!this.strategy.data) { c.error = 'Run an analysis first so the advisor has data to reason over.'; return; }
+      c.error = '';
+      c.messages.push({ role: 'user', content: message });
+      c.input = '';
+      c.loading = true;
+      this.$nextTick(() => this.scrollChatBottom());
+      try {
+        const history = c.messages.slice(0, -1).slice(-10).map((m) => ({ role: m.role, content: m.content }));
+        const r = await fetch('/api/strategy/chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, history }),
+        });
+        const data = await r.json();
+        if (data.ok) {
+          c.messages.push({ role: 'assistant', content: data.reply, model: data.model });
+        } else {
+          c.error = data.message || data.error || 'Advisor unavailable';
+        }
+      } catch (e) {
+        c.error = String(e);
+      } finally {
+        c.loading = false;
+        this.refreshUsage();
+        this.$nextTick(() => this.scrollChatBottom());
+      }
+    },
+    scrollChatBottom() {
+      const el = document.getElementById('advisor-chat-scroll');
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+    renderMd(text) {
+      const esc = String(text || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const lines = esc.split('\n');
+      let html = ''; let inList = false;
+      const inline = (s) => s
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-meta-gray-100 text-[11px]">$1</code>');
+      for (let raw of lines) {
+        const line = raw.trim();
+        if (/^#{1,6}\s+/.test(line)) {
+          if (inList) { html += '</ul>'; inList = false; }
+          html += `<div class="font-semibold mt-2">${inline(line.replace(/^#{1,6}\s+/, ''))}</div>`;
+        } else if (/^[-*]\s+/.test(line)) {
+          if (!inList) { html += '<ul class="list-disc list-inside space-y-0.5 my-1">'; inList = true; }
+          html += `<li>${inline(line.replace(/^[-*]\s+/, ''))}</li>`;
+        } else if (line === '') {
+          if (inList) { html += '</ul>'; inList = false; }
+          html += '<div class="h-2"></div>';
+        } else {
+          if (inList) { html += '</ul>'; inList = false; }
+          html += `<div>${inline(line)}</div>`;
+        }
+      }
+      if (inList) html += '</ul>';
+      return html;
+    },
+    async _copyText(text) {
       try {
         await navigator.clipboard.writeText(text);
         this.strategy.copied = true;

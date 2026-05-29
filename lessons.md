@@ -48,6 +48,16 @@ User context: setup is **1 campaign = 1 geo = 1 url, one shared pixel** (donatio
 - **Gotcha — overlapping lenses:** the segment rollups (gender/age/platform) are NON-additive views of the same spend; the prompt already warns against stacking exclusions. Growth levers are similarly sequenced ("apply ONE, re-measure") rather than "do all five", to avoid resetting learning on a low-volume account.
 - **UI:** `growth_moves` block in the briefing (impact/effort chips) + a dedicated **Growth & funnel** card (funnel bar with drop-offs, biggest-leak note, color-coded ranked levers). Verified in-browser; no app console errors.
 
+### Sprint 4 — "Ask Advisor" conversational chat
+
+User wanted to *interrogate* the advisor, not just read cards: e.g. the briefing suggested a cost cap on Portugal but didn't say WHICH price or HOW to structure it. Added a grounded multi-turn chat.
+
+- **`POST /api/strategy/chat` (`strategyChat`)** — free-form Q&A. New non-JSON LLM path (`callOpenRouterText` + `runChatWithFallback`, temp 0.35) since all prior calls forced `response_format: json_schema`. System prompt = `CHAT_SYSTEM_PROMPT` (playbook + GROWTH + "give the actual number and structure, respect the gates, suggest-only") and a `LIVE DATA SNAPSHOT` system message built by `chatContextBlock`.
+- **The snapshot shape gotcha:** the strategist `digest` does NOT hold campaigns/totals — those live on the top-level `lastAnalysis` (`last.campaigns`, `last.adsets`, `last.totals`, `last.kpi.label`). First draft read `last.digest.campaigns` (undefined). Fixed to pull `last.campaigns` + `last.adsets`. Ad SETS are the key inclusion: ABO budgets + `weeklyEvents` live there, and that's exactly what a cost-cap/scaling answer needs (the user's example was an ad set, not a campaign).
+- **It actually computes:** asked "what cost cap on my best ad set?", it returned Portugal's real $4.85 CPA, a $5.35-$5.80 cap (1.1-1.2×) with the math, the duplicate-test structure, and — correctly — warned that rising account CPM makes a tight cap risky and pointed to the creative refresh instead. Multi-turn held context (follow-up "exact retargeting structure + budget" → $5-10/day sized off the ~$100/day account + 1,273 abandoner pool, kill rule at 3× the $5.67 CPA).
+- **Frontend:** third drawer tab ("Ask Advisor") with chat bubbles, suggestion chips, sticky input (Enter to send / Shift+Enter newline), typing indicator, per-message copy + model tag. Assistant text rendered via a tiny **safe** markdown formatter (`renderMd`: HTML-escape FIRST, then a whitelisted subset — bold/headings/bullets/code) to avoid an x-html injection vector while still showing the model's formatting. `runActiveTabAI` tightened so switching to chat doesn't kick off the narrative call.
+- **Discipline preserved:** suggest-only (no Meta writes), 409 until an analysis is loaded, history capped to last 10 turns, all numbers must come from the snapshot. Verified in-browser end-to-end; only the benign Tailwind-CDN notice in console.
+
 ---
 
 ## 2026-05-29 Strategy advisor (suggest-only performance AI)
