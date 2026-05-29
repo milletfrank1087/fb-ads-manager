@@ -1471,6 +1471,54 @@
             <!-- ============ ASK ADVISOR (CHAT) TAB ============ -->
             <template x-if="strategy.tab==='chat'">
               <div class="flex flex-col" style="height: 100%; min-height: 420px;">
+                <!-- Tier A: standing operator brief (memory the advisor honors every turn) -->
+                <div class="mb-2 border border-gray-200 rounded-lg bg-gray-50/70 flex-shrink-0">
+                  <button @click="strategy.briefOpen = !strategy.briefOpen" type="button"
+                          class="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-gray-100/70 rounded-lg"
+                          title="A standing brief the advisor remembers in every chat: your targets, risk tolerance, campaigns it must never touch, and your brand voice for comment replies.">
+                    <svg class="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+                    <span class="text-[12px] font-medium text-meta-gray-700">Operator brief &amp; memory</span>
+                    <span class="text-[10.5px] text-meta-gray-400 truncate">— targets, sacred campaigns, brand voice (the advisor remembers this)</span>
+                    <svg class="w-3.5 h-3.5 text-meta-gray-300 ml-auto flex-shrink-0 transition-transform" :class="strategy.briefOpen ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                  </button>
+                  <div x-show="strategy.briefOpen" x-cloak class="px-2.5 pb-2.5 pt-1 border-t border-gray-200 space-y-2">
+                    <div class="grid grid-cols-3 gap-2">
+                      <label class="block">
+                        <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Target CPA</span>
+                        <input x-model="strategy.profile.targetCpa" type="text" placeholder="e.g. $5" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="Your acceptable cost per donation/purchase. The advisor aims at this when judging kill/scale.">
+                      </label>
+                      <label class="block">
+                        <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Target ROAS</span>
+                        <input x-model="strategy.profile.targetRoas" type="text" placeholder="e.g. 1.5" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="Return on ad spend you want to hold while scaling.">
+                      </label>
+                      <label class="block">
+                        <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Risk tolerance</span>
+                        <select x-model="strategy.profile.riskTolerance" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="Conservative = words-only / duplicates over live edits. Aggressive = bolder scaling proposals.">
+                          <option value="conservative">Conservative</option>
+                          <option value="balanced">Balanced</option>
+                          <option value="aggressive">Aggressive</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label class="block">
+                      <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Sacred campaigns — never touch (comma-separated)</span>
+                      <input x-model="strategy.profile.sacred" type="text" placeholder="e.g. Portugal - Mariana, Greece winner" class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="The advisor will never propose pausing or changing the budget of a campaign/ad set whose name contains any of these.">
+                    </label>
+                    <label class="block">
+                      <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Brand voice (used when drafting comment replies)</span>
+                      <textarea x-model="strategy.profile.brandVoice" rows="2" placeholder="Warm, sincere, factual. Thank donors. Never over-promise outcomes. Reply in the commenter's language." class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5" title="How replies should sound. The advisor writes comment replies in this voice."></textarea>
+                    </label>
+                    <label class="block">
+                      <span class="text-[10px] uppercase tracking-wide text-meta-gray-400">Notes / standing instructions</span>
+                      <textarea x-model="strategy.profile.notes" rows="2" placeholder="Anything the advisor should always keep in mind (e.g. one pixel shared across beneficiaries; donations vary in size; prefer prospecting over retargeting)." class="w-full text-[12px] border border-gray-200 rounded px-2 py-1 mt-0.5"></textarea>
+                    </label>
+                    <div class="flex items-center gap-2">
+                      <button @click="saveProfile()" :disabled="strategy.briefSaving" type="button" class="text-[12px] font-medium px-3 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50" x-text="strategy.briefSaving ? 'Saving…' : 'Save brief'"></button>
+                      <span x-show="strategy.briefSaved" x-cloak class="text-[11px] text-emerald-600">Saved ✓ — applied to the next message</span>
+                      <span class="ml-auto text-[10px] text-meta-gray-400">Stored locally; injected into every chat as memory.</span>
+                    </div>
+                  </div>
+                </div>
                 <!-- messages scroll area -->
                 <div id="advisor-chat-scroll" class="flex-1 overflow-y-auto space-y-3 pr-1">
                   <!-- empty / intro state -->
@@ -1480,7 +1528,7 @@
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
                       </div>
                       <div class="text-sm font-semibold text-meta-gray-800">Ask the advisor</div>
-                      <div class="text-[12px] text-meta-gray-500 max-w-md mx-auto mt-1">It's briefed with this account's live data — campaigns, ad sets, budgets, the decision digest and growth funnel — plus the community playbook. It pulls fresh numbers on its own and can propose changes you approve. Ask in plain English — no need to name a tool.</div>
+                      <div class="text-[12px] text-meta-gray-500 max-w-md mx-auto mt-1">It's briefed with this account's live data — campaigns, ad sets, budgets, the decision digest, growth funnel and <b>comments</b> — plus the community playbook and your saved brief. It pulls fresh numbers on its own and can propose ad <b>and comment</b> changes you approve. Ask in plain English — no need to name a tool.</div>
                       <div class="flex flex-wrap justify-center gap-2 mt-4">
                         <template x-for="(q, i) in advisorSuggestions" :key="i">
                           <button @click="chatSuggest(q)" :disabled="!strategy.data || strategy.chat.loading"
@@ -1548,8 +1596,15 @@
                                 </div>
                                 <!-- body: exact target + change diff (not the AI's paraphrase) -->
                                 <div class="px-3 py-2 text-[12px] space-y-1 bg-white">
-                                  <div><span class="text-meta-gray-400">Target:</span> <span class="font-medium text-meta-gray-800" x-text="a.entityName"></span> <span class="text-meta-gray-400 text-[10.5px]" x-text="'· ' + a.level + ' · id ' + a.entityId"></span></div>
-                                  <template x-if="a.change">
+                                  <div><span class="text-meta-gray-400" x-text="a.kind==='comment' ? 'Comment:' : 'Target:'"></span> <span class="font-medium text-meta-gray-800" x-text="a.entityName"></span> <span class="text-meta-gray-400 text-[10.5px]" x-text="a.kind==='comment' ? '· comment' : ('· ' + a.level + ' · id ' + a.entityId)"></span></div>
+                                  <!-- a drafted reply gets its own quoted block so the operator reviews the exact wording -->
+                                  <template x-if="a.kind==='comment' && a.replyText">
+                                    <div class="text-[12px] text-meta-gray-700 border-l-2 border-indigo-300 bg-indigo-50/50 rounded-r px-2 py-1 mt-1">
+                                      <span class="text-[9.5px] uppercase tracking-wide text-indigo-400">reply to post</span>
+                                      <div x-text="a.replyText"></div>
+                                    </div>
+                                  </template>
+                                  <template x-if="a.change && !(a.kind==='comment' && a.replyText)">
                                     <div class="flex items-center gap-1.5 flex-wrap">
                                       <span class="text-meta-gray-400" x-text="a.change.field + ':'"></span>
                                       <span class="line-through text-meta-gray-400" x-text="a.change.from"></span>
@@ -1603,6 +1658,17 @@
                                 <div class="px-2 py-1 text-[10px] text-meta-gray-500 border-b border-gray-200 bg-white" x-text="'Ad preview · ' + (p.adName || '')"></div>
                                 <div class="overflow-auto" style="max-height: 360px;" x-html="p.iframe"></div>
                               </div>
+                            </template>
+                          </div>
+                        </template>
+                        <!-- Tier D: suggested follow-ups (click to ask) -->
+                        <template x-if="m.role==='assistant' && !m.streaming && m.followups && m.followups.length">
+                          <div class="mt-2 flex flex-wrap gap-1.5">
+                            <template x-for="(q, qi) in m.followups" :key="qi">
+                              <button @click="useFollowup(q)" :disabled="strategy.chat.loading" type="button"
+                                      class="text-[11px] text-indigo-600 border border-indigo-200 bg-indigo-50/60 hover:bg-indigo-100 rounded-full px-2.5 py-1 disabled:opacity-50 text-left">
+                                <span class="text-indigo-400 mr-0.5">↳</span><span x-text="q"></span>
+                              </button>
                             </template>
                           </div>
                         </template>

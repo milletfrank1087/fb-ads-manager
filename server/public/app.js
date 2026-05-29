@@ -254,6 +254,10 @@ function dashboard() {
       copied: false,
       error: '',
       chat: { messages: [], input: '', loading: false, error: '', sessionId: '' },
+      briefOpen: false,
+      briefSaving: false,
+      briefSaved: false,
+      profile: { targetCpa: '', targetRoas: '', riskTolerance: 'balanced', sacred: '', brandVoice: '', notes: '' },
     },
     strategyWindows: [
       { id: 'last_7d', label: 'Last 7 days' },
@@ -265,7 +269,7 @@ function dashboard() {
     advisorSuggestions: [
       'How did yesterday compare to our usual day?',
       'Which campaign is safe to scale right now, and by how much?',
-      'Where am I losing the most donations in the funnel?',
+      'What are people saying in the comments — any objections or spam?',
       'Find my worst ad set and propose what to do about it',
     ],
 
@@ -1037,6 +1041,7 @@ function dashboard() {
     // ---------- Strategy advisor (suggest-only) ----------
     async openStrategy() {
       this.strategy.open = true;
+      this.loadProfile();
       if (!this.strategy.data && !this.strategy.loading) await this.runStrategy();
     },
     closeStrategy() { this.strategy.open = false; },
@@ -1142,6 +1147,7 @@ function dashboard() {
           if (data.ok) {
             const i = ensureAsst(); c.messages[i].content = data.reply; c.messages[i].model = data.model; c.messages[i].streaming = false;
             (data.approvals || []).forEach((a) => { a.status = 'pending'; a.armed = data.advisorWritesEnabled === true; c.messages[i].approvals.push(a); });
+            this.finalizeAssistant(c.messages[i]);
           }
           else c.error = data.message || data.error || 'Advisor unavailable';
           return;
@@ -1182,7 +1188,7 @@ function dashboard() {
               m.approvals.push(a);
               this.scrollChatBottom();
             }
-            else if (ev.type === 'done') { const i = ensureAsst(); c.messages[i].model = ev.model; c.messages[i].streaming = false; }
+            else if (ev.type === 'done') { const i = ensureAsst(); c.messages[i].model = ev.model; c.messages[i].streaming = false; this.finalizeAssistant(c.messages[i]); }
             else if (ev.type === 'error') { c.error = ev.message || ev.error || 'Advisor unavailable'; }
           }
         }
@@ -1201,15 +1207,65 @@ function dashboard() {
       const el = document.getElementById('advisor-chat-scroll');
       if (el) el.scrollTop = el.scrollHeight;
     },
+    // Tier D: pull the trailing "[FOLLOWUPS] a | b | c" line out of the answer into clickable chips.
+    finalizeAssistant(m) {
+      if (!m || typeof m.content !== 'string') return;
+      const idx = m.content.search(/\**\s*\[FOLLOWUPS\]/i);
+      if (idx < 0) { m.followups = m.followups || []; return; }
+      const tail = m.content.slice(idx).replace(/\**\s*\[FOLLOWUPS\][:\-\s]*/i, '');
+      m.content = m.content.slice(0, idx).replace(/\s+$/, '');
+      m.followups = tail.split(/\s*\|\s*/).map((s) => s.replace(/[\s*_>#-]+$/g, '').trim()).filter((s) => s.length > 2).slice(0, 3);
+    },
+    useFollowup(q) {
+      const c = this.strategy.chat;
+      if (c.loading || !q) return;
+      c.input = q;
+      this.sendChat();
+    },
+    // Tier A: load/save the standing operator brief the advisor honors every turn.
+    async loadProfile() {
+      try {
+        const r = await fetch('/api/strategy/profile');
+        const data = await r.json().catch(() => ({}));
+        if (data.ok && data.profile) {
+          const p = data.profile;
+          this.strategy.profile = {
+            targetCpa: p.targetCpa || '', targetRoas: p.targetRoas || '',
+            riskTolerance: p.riskTolerance || 'balanced',
+            sacred: Array.isArray(p.sacred) ? p.sacred.join(', ') : (p.sacred || ''),
+            brandVoice: p.brandVoice || '', notes: p.notes || '',
+          };
+        }
+      } catch (e) { /* non-fatal */ }
+    },
+    async saveProfile() {
+      const s = this.strategy;
+      s.briefSaving = true; s.briefSaved = false;
+      try {
+        const p = s.profile;
+        const r = await fetch('/api/strategy/profile', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetCpa: p.targetCpa, targetRoas: p.targetRoas, riskTolerance: p.riskTolerance,
+            sacred: p.sacred, brandVoice: p.brandVoice, notes: p.notes,
+          }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (data.ok) { s.briefSaved = true; setTimeout(() => { s.briefSaved = false; }, 2500); }
+        else { s.chat.error = data.message || 'Could not save brief'; }
+      } catch (e) { s.chat.error = String(e); }
+      finally { s.briefSaving = false; }
+    },
     toolLabel(name, args) {
       const verbs = {
         get_fresh_insights: 'Fetching live insights',
         get_change_history: 'Reading change history',
         get_ad_preview: 'Loading ad preview',
         re_analyze: 'Re-analyzing account',
+        get_comments: 'Reading comments',
       };
       let label = verbs[name] || name;
-      const hint = args && (args.name || (args.level === 'account' ? 'account' : '') || args.window);
+      const hint = args && (args.name || (args.level === 'account' ? 'account' : '') || args.scope || args.window);
       if (hint) label += ` · ${hint}`;
       if (args && args.breakdown && args.breakdown !== 'none') label += ` (${args.breakdown})`;
       return label;
@@ -1220,6 +1276,7 @@ function dashboard() {
         get_change_history: 'M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z',
         get_ad_preview: 'M4 5h16v14H4zM4 15l4-4 3 3 4-5 5 6',
         re_analyze: 'M4 4v6h6M20 20v-6h-6M5 13a7 7 0 0012 4M19 11a7 7 0 00-12-4',
+        get_comments: 'M8 10h8M8 14h5M21 12a8 8 0 01-11.6 7.1L4 20l1-4.3A8 8 0 1121 12z',
       }[name] || 'M5 12h14';
       return `<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="${p}"/></svg>`;
     },
@@ -1266,6 +1323,7 @@ function dashboard() {
     },
     renderMd(text) {
       const esc = String(text || '')
+        .replace(/\**\s*\[FOLLOWUPS\][\s\S]*$/i, '')
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const lines = esc.split('\n');
       let html = ''; let inList = false;

@@ -11,7 +11,7 @@ import * as comments from './lib/comments.js';
 import { autoMod } from './lib/autoMod.js';
 import { analyzerEnabled, suggestReply, strategyNarrative, dailyBriefing, strategyChat, strategyChatStream } from './lib/analyzer.js';
 import { analyzeStrategy, getLastAnalysis, setNarrative, setBriefing } from './lib/strategist.js';
-import { STRATEGY_TOOLS, runStrategyTool, executeStrategyWrite, isWriteTool, advisorWritesEnabled } from './lib/strategyTools.js';
+import { STRATEGY_TOOLS, runStrategyTool, executeStrategyWrite, isWriteTool, advisorWritesEnabled, buildAdvisorMemory } from './lib/strategyTools.js';
 import {
   syncAll as cmSyncAll,
   syncCommentsOnly as cmSyncCommentsOnly,
@@ -333,6 +333,9 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
   const history = Array.isArray(req.body?.history) ? req.body.history : [];
   const window = last?.window || null;
   const startedAt = Date.now();
+  // Tier A: standing operator brief + episodic memory (recent applied changes + past chat decisions).
+  let memory = '';
+  try { memory = buildAdvisorMemory(); } catch (e) { log.warn('strategy.memory.failed', { error: String(e.message || e) }); }
   try { store.logStrategyChat({ session_id: sessionId, role: 'user', content: message, window }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
 
   // Read-only tool wiring: a one-line human summary for the UI chip + the (huge) iframe for previews.
@@ -345,6 +348,10 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
     if (name === 'get_change_history') return `${r.scope}: ${r.count} recent change(s)`;
     if (name === 'get_ad_preview') return `${r.adName} (${r.status}) — ${r.format}`;
     if (name === 're_analyze') return `re-analyzed ${r.window}: ${r.counts?.activeCampaigns ?? '?'} active campaigns`;
+    if (name === 'get_comments') {
+      if (r.scope === 'summary') return `${r.summary?.total ?? 0} comments · ${r.summary?.needs_reply ?? 0} need reply · ${r.summary?.flagged ?? 0} flagged`;
+      return `${r.count} ${r.scope} comment(s)`;
+    }
     return 'done';
   };
   const persistTool = (name, args, r) => {
@@ -360,7 +367,7 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
     const onTool = ({ phase, name, args, result }) => { if (phase === 'done') { toolsUsed.push({ name, ok: result?.ok !== false }); persistTool(name, args, result); } };
     const onApproval = (a) => { approvals.push(a); persistApproval(a); };
     try {
-      const { reply, model } = await strategyChat({ message, history, last, tools: STRATEGY_TOOLS, runTool: runStrategyTool, onTool, onApproval, isApprovalTool: isWriteTool });
+      const { reply, model } = await strategyChat({ message, history, last, memory, tools: STRATEGY_TOOLS, runTool: runStrategyTool, onTool, onApproval, isApprovalTool: isWriteTool });
       const elapsedMs = Date.now() - startedAt;
       log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, tools: toolsUsed.length, approvals: approvals.length, elapsedMs, stream: false });
       try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: reply, model, window, elapsed_ms: elapsedMs }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
@@ -392,7 +399,7 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'approval', approval: a, armed: advisorWritesEnabled() })}\n\n`);
   };
   try {
-    const { reply, model } = await strategyChatStream({ message, history, last, onDelta, onTool, onApproval, isApprovalTool: isWriteTool, tools: STRATEGY_TOOLS, runTool: runStrategyTool });
+    const { reply, model } = await strategyChatStream({ message, history, last, memory, onDelta, onTool, onApproval, isApprovalTool: isWriteTool, tools: STRATEGY_TOOLS, runTool: runStrategyTool });
     const elapsedMs = Date.now() - startedAt;
     res.write(`data: ${JSON.stringify({ type: 'done', model, approvals: approvals.length })}\n\n`);
     res.end();
@@ -439,6 +446,34 @@ app.post('/api/strategy/tool/execute', ah(async (req, res) => {
     log.warn('strategy.write.execute.failed', { name, error: String(err.message || err) });
     return res.status(502).json({ ok: false, error: 'execute_failed', message: String(err.message || err) });
   }
+}));
+
+// Tier A: the standing OPERATOR BRIEF the advisor honors every turn (target CPA/ROAS, risk
+// tolerance, sacred campaigns, brand voice). Stored as JSON in app_settings; injected via memory.
+const PROFILE_RISK = new Set(['conservative', 'balanced', 'aggressive']);
+app.get('/api/strategy/profile', (_req, res) => {
+  let profile = {};
+  try { profile = JSON.parse(store.getSetting('advisor_profile') || '{}') || {}; } catch { profile = {}; }
+  res.json({ ok: true, profile, memoryPreview: (() => { try { return buildAdvisorMemory(); } catch { return ''; } })() });
+});
+
+app.post('/api/strategy/profile', ah(async (req, res) => {
+  const b = req.body || {};
+  const clean = {
+    targetCpa: b.targetCpa != null && b.targetCpa !== '' ? String(b.targetCpa).slice(0, 40) : '',
+    targetRoas: b.targetRoas != null && b.targetRoas !== '' ? String(b.targetRoas).slice(0, 40) : '',
+    riskTolerance: PROFILE_RISK.has(b.riskTolerance) ? b.riskTolerance : 'balanced',
+    sacred: Array.isArray(b.sacred) ? b.sacred.map((s) => String(s).slice(0, 80)).filter(Boolean).slice(0, 30)
+      : (typeof b.sacred === 'string' ? b.sacred.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 30) : []),
+    brandVoice: String(b.brandVoice || '').slice(0, 1200),
+    notes: String(b.notes || '').slice(0, 2000),
+  };
+  try { store.setSetting('advisor_profile', JSON.stringify(clean)); } catch (e) {
+    log.warn('strategy.profile.save_failed', { error: String(e.message || e) });
+    return res.status(500).json({ ok: false, error: 'save_failed', message: String(e.message || e) });
+  }
+  log.info('strategy.profile.saved', { sacred: clean.sacred.length, risk: clean.riskTolerance });
+  res.json({ ok: true, profile: clean });
 }));
 
 // ===================== Comments Manager (/api/cm/*) =====================

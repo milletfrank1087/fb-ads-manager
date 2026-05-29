@@ -83,6 +83,10 @@ export const config = Object.freeze({
   openrouterApiKey: opt('OPENROUTER_API_KEY', ''),
   openrouterModel: opt('OPENROUTER_MODEL', 'google/gemini-3.1-flash-lite'),
   openrouterFallbackModel: opt('OPENROUTER_FALLBACK_MODEL', 'google/gemini-3-flash-preview'),
+  // Stronger model for the interactive advisor chat (final synthesis + tool reasoning). Bulk
+  // comment classification stays on the cheap model; the chat routes to this one with the others
+  // as fallbacks. Default = the (stronger) preview model.
+  openrouterSynthesisModel: opt('OPENROUTER_SYNTHESIS_MODEL', 'google/gemini-3-flash-preview'),
   analysisBatchSize: intOpt('ANALYSIS_BATCH_SIZE', 10),
   analysisBatchConcurrency: Math.max(1, Math.min(8, intOpt('ANALYSIS_BATCH_CONCURRENCY', 3))),
   analysisMaxCommentsPerRun: intOpt('ANALYSIS_MAX_COMMENTS_PER_RUN', 500),

@@ -331,6 +331,12 @@ CREATE TABLE IF NOT EXISTS strategy_chat (
 );
 CREATE INDEX IF NOT EXISTS idx_stratchat_session ON strategy_chat(session_id);
 CREATE INDEX IF NOT EXISTS idx_stratchat_created ON strategy_chat(created_at);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 db.exec(SCHEMA);
@@ -993,6 +999,20 @@ export const store = {
 
   getStrategyChat(limit = 100) {
     return db.prepare('SELECT * FROM strategy_chat ORDER BY id DESC LIMIT ?').all(limit);
+  },
+
+  getSetting(key, fallback = null) {
+    const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+    if (!row) return fallback;
+    return row.value;
+  },
+
+  setSetting(key, value) {
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `).run(key, value == null ? null : String(value));
+    return true;
   },
 
   countRecentAdActions(action, entityId, sinceIso) {
