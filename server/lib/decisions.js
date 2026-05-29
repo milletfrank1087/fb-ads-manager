@@ -439,6 +439,11 @@ export function buildDecisionDigest(ctx) {
 
   const segments = {
     ageGender: buildSegments(ageGenderRows, kpi, segmentBaselineCpa, (r) => `${r.age || '?'} · ${r.gender || '?'}`),
+    // Gender + age ROLLUPS: individual age×gender cells are often too small to clear the CI, but the
+    // rollups aggregate enough conversions to give a confident verdict — this is how a real pattern
+    // like "men underperform across the board" surfaces with rigor instead of as per-cell noise.
+    gender: buildSegments(ageGenderRows, kpi, segmentBaselineCpa, (r) => r.gender ? r.gender[0].toUpperCase() + r.gender.slice(1) : '?'),
+    age: buildSegments(ageGenderRows, kpi, segmentBaselineCpa, (r) => r.age || '?'),
     placement: buildSegments(placementRows, kpi, segmentBaselineCpa, (r) => `${r.publisher_platform || '?'} · ${(r.platform_position || '').replace(/_/g, ' ')}`.trim()),
     // Country can be 40+ rows (one per country reached); cap to the top 15 by spend so it neither
     // bloats the AI prompt (truncated at a char budget) nor the UI. UI only renders the top 6 anyway.
@@ -454,6 +459,8 @@ export function buildDecisionDigest(ctx) {
   // per country, so an account-level country verdict ≈ a whole campaign (handled by campaign decisions);
   // recommending "exclude country X" would be misleading. Country stays in `segments` for context only.
   const targeting = targetingDecisions([
+    { kind: 'gender', rows: segments.gender },
+    { kind: 'age band', rows: segments.age },
     { kind: 'age/gender', rows: segments.ageGender },
     { kind: 'placement', rows: segments.placement },
     { kind: 'device', rows: segments.device },
