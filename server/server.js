@@ -11,7 +11,7 @@ import * as comments from './lib/comments.js';
 import { autoMod } from './lib/autoMod.js';
 import { analyzerEnabled, suggestReply, strategyNarrative, dailyBriefing, strategyChat, strategyChatStream } from './lib/analyzer.js';
 import { analyzeStrategy, getLastAnalysis, setNarrative, setBriefing } from './lib/strategist.js';
-import { STRATEGY_TOOLS, runStrategyTool } from './lib/strategyTools.js';
+import { STRATEGY_TOOLS, runStrategyTool, executeStrategyWrite, isWriteTool, advisorWritesEnabled } from './lib/strategyTools.js';
 import {
   syncAll as cmSyncAll,
   syncCommentsOnly as cmSyncCommentsOnly,
@@ -350,16 +350,21 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
   const persistTool = (name, args, r) => {
     try { store.logStrategyChat({ session_id: sessionId, role: 'tool', content: `${name}(${JSON.stringify(args).slice(0, 200)}) -> ${toolSummary(name, r)}`, model: name, window }); } catch {}
   };
+  const persistApproval = (a) => {
+    try { store.logStrategyChat({ session_id: sessionId, role: 'tool', content: `PROPOSED ${a.tool}: ${a.summary} [awaiting approval]`, model: a.tool, window }); } catch {}
+  };
 
   if (!wantStream) {
     const toolsUsed = [];
+    const approvals = [];
     const onTool = ({ phase, name, args, result }) => { if (phase === 'done') { toolsUsed.push({ name, ok: result?.ok !== false }); persistTool(name, args, result); } };
+    const onApproval = (a) => { approvals.push(a); persistApproval(a); };
     try {
-      const { reply, model } = await strategyChat({ message, history, last, tools: STRATEGY_TOOLS, runTool: runStrategyTool, onTool });
+      const { reply, model } = await strategyChat({ message, history, last, tools: STRATEGY_TOOLS, runTool: runStrategyTool, onTool, onApproval, isApprovalTool: isWriteTool });
       const elapsedMs = Date.now() - startedAt;
-      log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, tools: toolsUsed.length, elapsedMs, stream: false });
+      log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, tools: toolsUsed.length, approvals: approvals.length, elapsedMs, stream: false });
       try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: reply, model, window, elapsed_ms: elapsedMs }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
-      res.json({ ok: true, reply, model, toolsUsed });
+      res.json({ ok: true, reply, model, toolsUsed, approvals, advisorWritesEnabled: advisorWritesEnabled() });
     } catch (err) {
       log.warn('strategy.chat.failed', { error: String(err.message || err) });
       try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: '', window, error_message: String(err.message || err) }); } catch {}
@@ -372,6 +377,7 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
   const onDelta = (chunk) => { res.write(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`); };
   const toolsUsed = [];
+  const approvals = [];
   const onTool = ({ phase, name, args, result }) => {
     if (phase === 'start') { res.write(`data: ${JSON.stringify({ type: 'tool', phase: 'start', name, args })}\n\n`); return; }
     toolsUsed.push({ name, ok: result?.ok !== false });
@@ -380,18 +386,58 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
     if (name === 'get_ad_preview' && result?.ok && result.iframe) evt.preview = { iframe: result.iframe, adName: result.adName };
     res.write(`data: ${JSON.stringify(evt)}\n\n`);
   };
+  const onApproval = (a) => {
+    approvals.push(a);
+    persistApproval(a);
+    res.write(`data: ${JSON.stringify({ type: 'approval', approval: a, armed: advisorWritesEnabled() })}\n\n`);
+  };
   try {
-    const { reply, model } = await strategyChatStream({ message, history, last, onDelta, onTool, tools: STRATEGY_TOOLS, runTool: runStrategyTool });
+    const { reply, model } = await strategyChatStream({ message, history, last, onDelta, onTool, onApproval, isApprovalTool: isWriteTool, tools: STRATEGY_TOOLS, runTool: runStrategyTool });
     const elapsedMs = Date.now() - startedAt;
-    res.write(`data: ${JSON.stringify({ type: 'done', model })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', model, approvals: approvals.length })}\n\n`);
     res.end();
-    log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, tools: toolsUsed.length, elapsedMs, stream: true });
+    log.info('strategy.chat.ok', { model, qLen: message.length, turns: history.length, tools: toolsUsed.length, approvals: approvals.length, elapsedMs, stream: true });
     try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: reply, model, window, elapsed_ms: elapsedMs }); } catch (e) { log.warn('strategy.chat.log_failed', { error: String(e.message || e) }); }
   } catch (err) {
     log.warn('strategy.chat.failed', { error: String(err.message || err), stream: true });
     try { res.write(`data: ${JSON.stringify({ type: 'error', error: 'chat_failed', message: String(err.message || err) })}\n\n`); } catch {}
     res.end();
     try { store.logStrategyChat({ session_id: sessionId, role: 'assistant', content: '', window, error_message: String(err.message || err) }); } catch {}
+  }
+}));
+
+// Executes a Tier-2 write the operator approved on an approval card. Gated by FB_ALLOW_ADVISOR_WRITES
+// (default OFF) + adManager's own allowAdManagement/rate guards. The exact reviewed args are what run.
+app.post('/api/strategy/tool/execute', ah(async (req, res) => {
+  const name = (req.body?.name || '').toString();
+  const args = (req.body && typeof req.body.args === 'object' && req.body.args) || {};
+  const sessionId = (req.body?.sessionId || '').toString().slice(0, 64) || null;
+  const decision = (req.body?.decision || 'approve').toString();
+
+  if (!isWriteTool(name)) return res.status(400).json({ ok: false, error: 'not_a_write_tool', message: `${name} is not an approvable write.` });
+
+  // Rejections never touch Meta — just record the operator's decision (+ optional note) for the audit/AI.
+  if (decision === 'reject') {
+    try { store.logStrategyChat({ session_id: sessionId, role: 'tool', content: `REJECTED ${name}(${JSON.stringify(args).slice(0, 200)})${req.body?.note ? ' — ' + String(req.body.note).slice(0, 200) : ''}`, model: name }); } catch {}
+    log.info('strategy.write.rejected', { name });
+    return res.json({ ok: true, rejected: true });
+  }
+
+  if (!advisorWritesEnabled()) {
+    try { store.logStrategyChat({ session_id: sessionId, role: 'tool', content: `BLOCKED ${name} — advisor writes disabled`, model: name }); } catch {}
+    return res.status(423).json({ ok: false, error: 'advisor_writes_disabled', armed: false, message: 'Advisor writes are disabled. Set FB_ALLOW_ADVISOR_WRITES=1 and restart to let approvals execute. (Nothing was sent to Meta.)' });
+  }
+
+  try {
+    const result = await executeStrategyWrite(name, args);
+    const ok = result?.ok === true;
+    try { store.logStrategyChat({ session_id: sessionId, role: 'tool', content: `${ok ? 'APPLIED' : 'FAILED'} ${name}(${JSON.stringify(args).slice(0, 200)}) -> ${ok ? 'ok' : (result?.message || result?.error || 'error')}`, model: name }); } catch {}
+    log.info('strategy.write.execute.result', { name, ok, blocked: !!result?.blocked });
+    const status = ok ? 200 : (result?.blocked || result?.error === 'advisor_writes_disabled' ? 423 : 502);
+    return res.status(status).json({ ok, result, armed: true });
+  } catch (err) {
+    log.warn('strategy.write.execute.failed', { name, error: String(err.message || err) });
+    return res.status(502).json({ ok: false, error: 'execute_failed', message: String(err.message || err) });
   }
 }));
 

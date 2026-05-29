@@ -263,10 +263,10 @@ function dashboard() {
       { id: 'last_90d', label: 'Last 90 days' },
     ],
     advisorSuggestions: [
-      'What cost cap should I set on my best ad set, and how do I structure it?',
-      'Which lookalike audience should I launch first, and how do I build it?',
-      'Where am I losing the most donations in the funnel?',
+      'How did yesterday compare to our usual day?',
       'Which campaign is safe to scale right now, and by how much?',
+      'Where am I losing the most donations in the funnel?',
+      'Find my worst ad set and propose what to do about it',
     ],
 
     get canManage() {
@@ -1113,21 +1113,23 @@ function dashboard() {
       this._copyText(text);
     },
     chatSuggest(q) { this.strategy.chat.input = q; this.sendChat(); },
-    async sendChat() {
+    async sendChat(overrideMessage) {
       const c = this.strategy.chat;
-      const message = (c.input || '').trim();
+      const isAuto = overrideMessage != null;
+      const message = (isAuto ? String(overrideMessage) : (c.input || '')).trim();
       if (!message || c.loading) return;
       if (!this.strategy.data) { c.error = 'Run an analysis first so the advisor has data to reason over.'; return; }
       if (!c.sessionId) c.sessionId = 'sess_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       c.error = '';
       const history = c.messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
-      c.messages.push({ role: 'user', content: message });
-      c.input = '';
+      // Auto-continue messages (after an approve/reject) are shown as a subtle system line, not a user bubble.
+      c.messages.push({ role: 'user', content: message, system: isAuto });
+      if (!isAuto) c.input = '';
       c.loading = true;
       this.$nextTick(() => this.scrollChatBottom());
       let asstIdx = -1;
       const ensureAsst = () => {
-        if (asstIdx < 0) { asstIdx = c.messages.push({ role: 'assistant', content: '', model: null, streaming: true, tools: [], previews: [] }) - 1; }
+        if (asstIdx < 0) { asstIdx = c.messages.push({ role: 'assistant', content: '', model: null, streaming: true, tools: [], previews: [], approvals: [] }) - 1; }
         return asstIdx;
       };
       try {
@@ -1137,7 +1139,10 @@ function dashboard() {
         });
         if (!r.body || typeof r.body.getReader !== 'function') {
           const data = await r.json().catch(() => ({}));
-          if (data.ok) { const i = ensureAsst(); c.messages[i].content = data.reply; c.messages[i].model = data.model; c.messages[i].streaming = false; }
+          if (data.ok) {
+            const i = ensureAsst(); c.messages[i].content = data.reply; c.messages[i].model = data.model; c.messages[i].streaming = false;
+            (data.approvals || []).forEach((a) => { a.status = 'pending'; a.armed = data.advisorWritesEnabled === true; c.messages[i].approvals.push(a); });
+          }
           else c.error = data.message || data.error || 'Advisor unavailable';
           return;
         }
@@ -1160,13 +1165,21 @@ function dashboard() {
             else if (ev.type === 'tool') {
               const m = c.messages[ensureAsst()];
               if (ev.phase === 'start') {
-                m.tools.push({ name: ev.name, label: this.toolLabel(ev.name, ev.args), status: 'running', summary: '' });
+                m.tools.push({ name: ev.name, args: ev.args || {}, label: this.toolLabel(ev.name, ev.args), status: 'running', summary: '', expanded: false });
               } else {
                 const t = [...m.tools].reverse().find((x) => x.name === ev.name && x.status === 'running');
                 if (t) { t.status = ev.ok ? 'done' : 'failed'; t.summary = ev.summary || ''; }
-                else m.tools.push({ name: ev.name, label: this.toolLabel(ev.name, {}), status: ev.ok ? 'done' : 'failed', summary: ev.summary || '' });
+                else m.tools.push({ name: ev.name, args: {}, label: this.toolLabel(ev.name, {}), status: ev.ok ? 'done' : 'failed', summary: ev.summary || '', expanded: false });
                 if (ev.preview && ev.preview.iframe) m.previews.push(ev.preview);
               }
+              this.scrollChatBottom();
+            }
+            else if (ev.type === 'approval') {
+              const m = c.messages[ensureAsst()];
+              const a = ev.approval || {};
+              a.status = 'pending';
+              a.armed = ev.armed === true;
+              m.approvals.push(a);
               this.scrollChatBottom();
             }
             else if (ev.type === 'done') { const i = ensureAsst(); c.messages[i].model = ev.model; c.messages[i].streaming = false; }
@@ -1200,6 +1213,56 @@ function dashboard() {
       if (hint) label += ` · ${hint}`;
       if (args && args.breakdown && args.breakdown !== 'none') label += ` (${args.breakdown})`;
       return label;
+    },
+    toolIcon(name) {
+      const p = {
+        get_fresh_insights: 'M4 19V5m0 14h16M8 16l3-4 3 2 4-6',
+        get_change_history: 'M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z',
+        get_ad_preview: 'M4 5h16v14H4zM4 15l4-4 3 3 4-5 5 6',
+        re_analyze: 'M4 4v6h6M20 20v-6h-6M5 13a7 7 0 0012 4M19 11a7 7 0 00-12-4',
+      }[name] || 'M5 12h14';
+      return `<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="${p}"/></svg>`;
+    },
+    prettyArgs(args) {
+      if (!args || typeof args !== 'object') return '(no arguments)';
+      const keys = Object.keys(args);
+      if (!keys.length) return '(no arguments)';
+      return keys.map((k) => `${k}: ${typeof args[k] === 'object' ? JSON.stringify(args[k]) : args[k]}`).join('\n');
+    },
+    async approveAction(mi, ai) {
+      const c = this.strategy.chat;
+      const m = c.messages[mi]; if (!m || !m.approvals) return;
+      const a = m.approvals[ai]; if (!a || a.status !== 'pending' || c.loading) return;
+      a.status = 'approving';
+      try {
+        const r = await fetch('/api/strategy/tool/execute', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: a.tool, args: a.args, sessionId: c.sessionId, decision: 'approve' }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (data.ok) { a.status = 'applied'; a.resultMsg = 'Applied to Meta'; }
+        else if (data.error === 'advisor_writes_disabled') { a.status = 'dryrun'; a.resultMsg = 'Writes disabled — nothing sent to Meta'; }
+        else { a.status = 'failed'; a.resultMsg = (data.result && data.result.message) || data.message || data.error || 'Failed'; }
+      } catch (e) { a.status = 'failed'; a.resultMsg = String(e); }
+      this.$nextTick(() => this.scrollChatBottom());
+      const outcome = a.status === 'applied' ? 'was APPLIED successfully'
+        : (a.status === 'dryrun' ? 'was approved, but advisor writes are OFF so nothing was sent to Meta (dry-run)'
+          : `did NOT apply (${a.resultMsg || 'failed'})`);
+      await this.sendChat(`[Operator approved] "${a.summary}" — it ${outcome}. Briefly confirm what changed (or didn't), and tell me what to watch next. Do not re-propose it.`);
+    },
+    async rejectAction(mi, ai) {
+      const c = this.strategy.chat;
+      const m = c.messages[mi]; const a = m && m.approvals && m.approvals[ai];
+      if (!a || a.status !== 'pending' || c.loading) return;
+      a.status = 'rejected';
+      try {
+        await fetch('/api/strategy/tool/execute', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: a.tool, args: a.args, sessionId: c.sessionId, decision: 'reject' }),
+        });
+      } catch {}
+      this.$nextTick(() => this.scrollChatBottom());
+      await this.sendChat(`[Operator rejected] "${a.summary}". Don't take that action. Suggest a safer or different next step instead.`);
     },
     renderMd(text) {
       const esc = String(text || '')

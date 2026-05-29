@@ -2,8 +2,9 @@ import { fb } from './fbClient.js';
 import { config } from './env.js';
 import { log } from './logger.js';
 import { getLastAnalysis, analyzeStrategy } from './strategist.js';
-import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, BREAKDOWN_PRESETS } from './adManager.js';
+import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, setStatus as adSetStatus, setBudget as adSetBudget, duplicate as adDuplicate, BREAKDOWN_PRESETS } from './adManager.js';
 import { INSIGHTS_FIELDS, normalizeInsightsRow } from './insights.js';
+import { store } from './store.js';
 
 // ============================================================================
 // Tier 1 READ-ONLY tools for the conversational advisor.
@@ -23,8 +24,14 @@ const nz = (n) => (Number.isFinite(n) ? n : 0);
 const div = (a, b) => (b > 0 ? a / b : null);
 const round = (n, d = 2) => (Number.isFinite(n) ? Math.round(n * 10 ** d) / 10 ** d : null);
 
-const VALID_WINDOWS = new Set(['last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d']);
+const VALID_WINDOWS = new Set(['today', 'yesterday', 'last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d']);
+const ANALYZE_WINDOWS = new Set(['last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d']);
 const VALID_BREAKDOWNS = new Set(['none', ...Object.keys(BREAKDOWN_PRESETS)]);
+
+// Tier 2 = write tools. They never execute inside the chat — they build an approval PROPOSAL the
+// operator must approve. Execution happens later via executeStrategyWrite (gated by
+// FB_ALLOW_ADVISOR_WRITES + adManager's own allowAdManagement/rate guards).
+const WRITE_TOOLS = new Set(['pause_entity', 'resume_entity', 'set_budget', 'duplicate_entity']);
 
 // ---------- tool schema (OpenRouter / OpenAI function-calling format) ----------
 
@@ -38,8 +45,8 @@ export const STRATEGY_TOOLS = [
         type: 'object',
         properties: {
           level: { type: 'string', enum: ['account', 'campaign', 'adset'], description: 'Scope of the pull. Use "account" for the whole account, otherwise name the entity.' },
-          name: { type: 'string', description: 'Substring of the campaign or ad set name to pull (case-insensitive). Omit for account-level.' },
-          window: { type: 'string', enum: ['last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d'], description: 'Date window. Default last_7d.' },
+          name: { type: 'string', description: 'Substring of the campaign or ad set name to pull (case-insensitive). Map the operator\'s words to a real entity name from the snapshot — e.g. "the French campaign" -> the campaign whose name contains "France". Omit for account-level.' },
+          window: { type: 'string', enum: ['today', 'yesterday', 'last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d'], description: 'Date window. Map natural language: "yesterday" -> yesterday, "this week" -> last_7d. Default last_7d.' },
           breakdown: { type: 'string', enum: ['none', 'age_gender', 'country', 'platform', 'placement', 'device', 'hourly'], description: 'Segment the pull. Default none (totals only).' },
         },
         required: ['level'],
@@ -85,6 +92,72 @@ export const STRATEGY_TOOLS = [
         properties: {
           window: { type: 'string', enum: ['last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d'], description: 'Window to analyze. Default last_30d.' },
         },
+      },
+    },
+  },
+  // ---------- Tier 2: WRITE tools (propose-only; operator must approve before anything executes) ----------
+  {
+    type: 'function',
+    function: {
+      name: 'pause_entity',
+      description: 'PROPOSE turning OFF (pausing) a campaign or ad set. This does NOT execute — it creates an approval request the operator must confirm. Use when a confident decision says to stop a loser. Resolve by name substring.',
+      parameters: {
+        type: 'object',
+        properties: {
+          level: { type: 'string', enum: ['campaign', 'adset'], description: 'campaign or adset' },
+          name: { type: 'string', description: 'Substring of the entity name to pause.' },
+          reason: { type: 'string', description: 'Short why (shown to the operator on the approval card).' },
+        },
+        required: ['level', 'name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'resume_entity',
+      description: 'PROPOSE turning ON (activating) a paused campaign or ad set. Propose-only; needs operator approval. Resolve by name substring.',
+      parameters: {
+        type: 'object',
+        properties: {
+          level: { type: 'string', enum: ['campaign', 'adset'], description: 'campaign or adset' },
+          name: { type: 'string', description: 'Substring of the entity name to activate.' },
+          reason: { type: 'string', description: 'Short why (shown on the approval card).' },
+        },
+        required: ['level', 'name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_budget',
+      description: 'PROPOSE a new DAILY budget for an ad set (or a CBO campaign). Propose-only; needs operator approval. Keep the change within ~20% of the current budget per the playbook (bigger jumps reset learning). For this all-ABO account, target the AD SET, not the campaign. Resolve by name substring.',
+      parameters: {
+        type: 'object',
+        properties: {
+          level: { type: 'string', enum: ['adset', 'campaign'], description: 'Usually adset for this account (ABO).' },
+          name: { type: 'string', description: 'Substring of the ad set / campaign name.' },
+          daily_budget: { type: 'number', description: 'New daily budget in the account currency units (e.g. 120 = $120/day). NOT cents.' },
+          reason: { type: 'string', description: 'Short why (shown on the approval card).' },
+        },
+        required: ['level', 'name', 'daily_budget'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'duplicate_entity',
+      description: 'PROPOSE duplicating a campaign or ad set into a PAUSED copy (the source is never touched). Propose-only; needs operator approval. Use for surf-scaling / testing a cost cap on a copy. Resolve by name substring.',
+      parameters: {
+        type: 'object',
+        properties: {
+          level: { type: 'string', enum: ['campaign', 'adset'], description: 'campaign or adset' },
+          name: { type: 'string', description: 'Substring of the entity name to duplicate.' },
+          reason: { type: 'string', description: 'Short why (shown on the approval card).' },
+        },
+        required: ['level', 'name'],
       },
     },
   },
@@ -242,7 +315,7 @@ async function getAdPreviewTool(args) {
 }
 
 async function reAnalyze(args) {
-  const window = VALID_WINDOWS.has(args.window) ? args.window : 'last_30d';
+  const window = ANALYZE_WINDOWS.has(args.window) ? args.window : 'last_30d';
   const res = await analyzeStrategy({ window });
   if (!res.ok) return { ok: false, error: 'analyze_failed', message: res.message || 'Re-analysis failed.' };
   return {
@@ -260,6 +333,138 @@ const EXECUTORS = {
   re_analyze: reAnalyze,
 };
 
+// ---------- Tier 2 write tools: build an approval PROPOSAL (no execution) ----------
+
+let approvalSeq = 0;
+const newApprovalId = () => `appr_${Date.now().toString(36)}_${(approvalSeq += 1)}`;
+
+// Resolve a write target strictly (write tools must hit the RIGHT entity). Returns the snapshot
+// entity object too, so the proposal can show current status/budget.
+function resolveWriteTarget(level, name) {
+  const last = getLastAnalysis();
+  if (!last) return { error: 'no_analysis', message: 'Run an analysis first.' };
+  const arr = level === 'adset' ? (last.adsets || []) : (last.campaigns || []);
+  const needle = String(name || '').toLowerCase().trim();
+  if (!needle) return { error: 'missing_name', message: 'Provide the entity name.' };
+  const exact = arr.find((e) => (e.name || '').toLowerCase() === needle);
+  const matches = exact ? [exact] : arr.filter((e) => (e.name || '').toLowerCase().includes(needle));
+  if (!matches.length) return { error: 'entity_not_found', message: `No ${level} matching "${name}" in the snapshot.` };
+  matches.sort((a, b) => nz(b.spend) - nz(a.spend));
+  return { entity: matches[0], ambiguous: matches.length > 1 };
+}
+
+function proposePause(args, toActive) {
+  const level = args.level === 'adset' ? 'adset' : 'campaign';
+  const r = resolveWriteTarget(level, args.name);
+  if (r.error) return { ok: false, error: r.error, message: r.message };
+  const e = r.entity;
+  const cur = e.status || 'UNKNOWN';
+  const want = toActive ? 'ACTIVE' : 'PAUSED';
+  if (cur === want) return { ok: false, error: 'no_change', message: `${e.name} is already ${want}.` };
+  return {
+    ok: true,
+    approval: {
+      id: newApprovalId(), tool: toActive ? 'resume_entity' : 'pause_entity',
+      action: toActive ? 'Resume (turn ON)' : 'Pause (turn OFF)',
+      level, entityId: e.id, entityName: e.name + (r.ambiguous ? ' (closest match)' : ''),
+      current: { status: cur }, change: { field: 'status', from: cur, to: want },
+      risk: toActive ? 'medium' : 'destructive',
+      reason: (args.reason || '').toString().slice(0, 300),
+      summary: `${toActive ? 'Activate' : 'Pause'} ${level} "${e.name}" (currently ${cur})`,
+      args: { level, id: e.id, name: e.name, status: want },
+      warning: toActive ? 'Activating restarts spend immediately.' : 'Pausing stops delivery immediately and can reset learning when re-enabled.',
+    },
+  };
+}
+
+function proposeSetBudget(args) {
+  const level = args.level === 'campaign' ? 'campaign' : 'adset';
+  const dollars = Number(args.daily_budget);
+  if (!Number.isFinite(dollars) || dollars <= 0) return { ok: false, error: 'invalid_budget', message: 'daily_budget must be a positive number (account currency, not cents).' };
+  const r = resolveWriteTarget(level, args.name);
+  if (r.error) return { ok: false, error: r.error, message: r.message };
+  const e = r.entity;
+  if (level === 'campaign' && e.isCBO === false) {
+    return { ok: false, error: 'abo_campaign', message: `"${e.name}" is an ABO campaign — budget lives on its ad sets. Propose set_budget on the AD SET instead.` };
+  }
+  const curDaily = e.dailyBudget != null ? Number(e.dailyBudget) : null;
+  const changePct = curDaily ? round(((dollars - curDaily) / curDaily) * 100, 1) : null;
+  let warning = 'Meta limits ~4 budget edits/hour/entity; bigger than ~20% jumps reset the learning phase.';
+  if (changePct != null && Math.abs(changePct) > 20) warning = `This is a ${changePct > 0 ? '+' : ''}${changePct}% change — over the ~20% the playbook recommends; it will likely reset learning. ` + warning;
+  return {
+    ok: true,
+    approval: {
+      id: newApprovalId(), tool: 'set_budget', action: 'Set daily budget',
+      level, entityId: e.id, entityName: e.name + (r.ambiguous ? ' (closest match)' : ''),
+      current: { dailyBudget: curDaily }, change: { field: 'daily_budget', from: curDaily != null ? `$${curDaily}/day` : 'unknown', to: `$${dollars}/day`, pct: changePct },
+      risk: (changePct != null && Math.abs(changePct) > 20) ? 'high' : 'medium',
+      reason: (args.reason || '').toString().slice(0, 300),
+      summary: `Set ${level} "${e.name}" daily budget to $${dollars}/day${curDaily != null ? ` (from $${curDaily})` : ''}`,
+      args: { level, id: e.id, name: e.name, daily_budget: dollars },
+      warning,
+    },
+  };
+}
+
+function proposeDuplicate(args) {
+  const level = args.level === 'adset' ? 'adset' : 'campaign';
+  const r = resolveWriteTarget(level, args.name);
+  if (r.error) return { ok: false, error: r.error, message: r.message };
+  const e = r.entity;
+  return {
+    ok: true,
+    approval: {
+      id: newApprovalId(), tool: 'duplicate_entity', action: 'Duplicate (paused copy)',
+      level, entityId: e.id, entityName: e.name + (r.ambiguous ? ' (closest match)' : ''),
+      current: { status: e.status || null }, change: { field: 'duplicate', from: e.name, to: `${e.name} - Copy (PAUSED)` },
+      risk: 'low',
+      reason: (args.reason || '').toString().slice(0, 300),
+      summary: `Duplicate ${level} "${e.name}" into a new PAUSED copy (source untouched)`,
+      args: { level, id: e.id, name: e.name, deep_copy: true },
+      warning: 'Creates a PAUSED copy. The original is never modified. You turn the copy on yourself.',
+    },
+  };
+}
+
+const PROPOSERS = {
+  pause_entity: (a) => proposePause(a, false),
+  resume_entity: (a) => proposePause(a, true),
+  set_budget: proposeSetBudget,
+  duplicate_entity: proposeDuplicate,
+};
+
+// ---------- Tier 2 EXECUTION (only after operator approval; gated) ----------
+
+export function advisorWritesEnabled() { return config.allowAdvisorWrites === true; }
+
+export function isWriteTool(name) { return WRITE_TOOLS.has(name); }
+
+// Executes a previously-approved write. Re-validates the entity still exists (drift guard) and
+// runs through adManager (which enforces allowAdManagement + the budget rate guard + audit log).
+export async function executeStrategyWrite(name, args = {}) {
+  if (!WRITE_TOOLS.has(name)) return { ok: false, error: 'not_a_write_tool', message: `${name} is not an approvable write.` };
+  if (!config.allowAdvisorWrites) {
+    return { ok: false, error: 'advisor_writes_disabled', message: 'Advisor writes are disabled. Set FB_ALLOW_ADVISOR_WRITES=1 and restart to let approvals execute. (Nothing was sent to Meta.)' };
+  }
+  const level = args.level === 'adset' ? 'adset' : 'campaign';
+  const id = (args.id || '').toString();
+  if (!id) return { ok: false, error: 'missing_id', message: 'Approved action is missing the entity id.' };
+  // Drift guard: the entity must still exist in our store; surface its current value.
+  const ent = store.getEntity(level, id);
+  if (!ent) return { ok: false, error: 'entity_gone', message: 'That entity is no longer in the local snapshot — re-analyze and re-propose before approving.' };
+
+  const t0 = Date.now();
+  let result;
+  if (name === 'pause_entity') result = await adSetStatus({ level, id, status: 'PAUSED' });
+  else if (name === 'resume_entity') result = await adSetStatus({ level, id, status: 'ACTIVE' });
+  else if (name === 'set_budget') result = await adSetBudget({ level, id, dailyBudget: Math.round(Number(args.daily_budget) * 100) });
+  else if (name === 'duplicate_entity') result = await adDuplicate({ level, id, deepCopy: args.deep_copy !== false });
+  else return { ok: false, error: 'unknown_write', message: name };
+
+  log.info('strategy.write.executed', { name, level, id, ok: result?.ok === true, blocked: !!result?.blocked, elapsedMs: Date.now() - t0 });
+  return result;
+}
+
 // Caps the JSON that goes back into the model context (keeps the prompt lean).
 function capResult(result, max = 3500) {
   let s;
@@ -275,8 +480,32 @@ function capResult(result, max = 3500) {
 }
 
 export async function runStrategyTool(name, args) {
-  const fn = EXECUTORS[name];
   const t0 = Date.now();
+
+  // Write tools never execute here — they build an approval proposal. If the proposal can't be
+  // built (e.g. entity not found / no-op), it is returned as a normal tool result so the model can
+  // react and rephrase (denial-as-feedback), without surfacing an approval card.
+  if (WRITE_TOOLS.has(name)) {
+    try {
+      const prop = PROPOSERS[name](args || {});
+      if (prop.ok) {
+        log.info('strategy.tool.proposed', { name, entity: prop.approval.entityName, risk: prop.approval.risk });
+        const result = { ok: true, proposed: true, approval: prop.approval };
+        // Tell the model the proposal is staged; it should stop and let the operator decide.
+        const content = JSON.stringify({ ok: true, proposed_for_approval: true, action: prop.approval.summary });
+        return { result, content, approval: prop.approval };
+      }
+      log.info('strategy.tool.propose_rejected', { name, error: prop.error, elapsedMs: Date.now() - t0 });
+      const result = { ok: false, error: prop.error, message: prop.message };
+      return { result, content: JSON.stringify(result) };
+    } catch (err) {
+      log.warn('strategy.tool.propose_failed', { name, error: String(err.message || err) });
+      const result = { ok: false, error: 'propose_error', message: String(err.message || err) };
+      return { result, content: JSON.stringify(result) };
+    }
+  }
+
+  const fn = EXECUTORS[name];
   if (!fn) {
     log.warn('strategy.tool.unknown', { name });
     return { result: { ok: false, error: 'unknown_tool', message: `No tool named ${name}.` }, content: `{"ok":false,"error":"unknown_tool:${name}"}` };

@@ -65,6 +65,12 @@ export const config = Object.freeze({
   readonly: boolOpt('FB_READONLY', true),
   allowCommentModeration: boolOpt('FB_ALLOW_COMMENT_MODERATION', false),
   allowAdManagement: boolOpt('FB_ALLOW_AD_MANAGEMENT', false),
+  // Separate, default-OFF gate for the AI advisor's Tier-2 write tools (pause/budget/duplicate).
+  // The advisor proposes a change; the operator approves it; ONLY then, and ONLY if this is on,
+  // does it execute (still subject to allowAdManagement + the budget rate guard). Keeping this
+  // independent from the dashboard's manual buttons means the AI can never mutate live campaigns
+  // by accident — the operator must explicitly arm it.
+  allowAdvisorWrites: boolOpt('FB_ALLOW_ADVISOR_WRITES', false),
   targetPageId: opt('FB_TARGET_PAGE_ID', '113297813778299'),
   killSwitch: boolOpt('FB_KILL_SWITCH', false),
   maxDailyCalls: intOpt('FB_MAX_DAILY_CALLS', 500),

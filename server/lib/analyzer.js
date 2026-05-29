@@ -184,7 +184,7 @@ async function streamOpenRouterStep(model, messages, { tools, onDelta, maxTokens
 // Orchestrates a multi-step tool-using chat turn. Streams the FINAL textual answer via onDelta
 // (tool-request steps emit no content, so the user only ever sees the answer). Read-only tools
 // auto-run; onTool({phase,name,args,result}) surfaces activity to the UI.
-async function runChatAgent({ messages, tools, runTool, onDelta, onTool, maxTokens = 1100, temperature = 0.35, maxIters = 4 }) {
+async function runChatAgent({ messages, tools, runTool, onDelta, onTool, onApproval, isApprovalTool, maxTokens = 1100, temperature = 0.35, maxIters = 4 }) {
   const models = [config.openrouterModel, config.openrouterFallbackModel].filter((m, i, a) => m && a.indexOf(m) === i);
   const useTools = Array.isArray(tools) && tools.length && typeof runTool === 'function';
   const streaming = typeof onDelta === 'function';
@@ -221,15 +221,26 @@ async function runChatAgent({ messages, tools, runTool, onDelta, onTool, maxToke
         content: res.text || null,
         tool_calls: res.toolCalls.map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.argsStr || '{}' } })),
       });
+      const approvals = [];
       for (const call of res.toolCalls) {
         let args = {};
         try { args = call.argsStr ? JSON.parse(call.argsStr) : {}; } catch { args = {}; }
-        if (onTool) onTool({ phase: 'start', name: call.name, args });
-        const { result, content } = await runTool(call.name, args);
-        toolsUsed.push({ name: call.name, args, ok: result?.ok !== false });
-        if (onTool) onTool({ phase: 'done', name: call.name, args, result });
+        const approvalTool = typeof isApprovalTool === 'function' && isApprovalTool(call.name);
+        // Read tools show a live "running" chip; write tools surface only as an approval card
+        // (success) or as the AI's own explanation (failed proposal) — never a chip.
+        if (!approvalTool && onTool) onTool({ phase: 'start', name: call.name, args });
+        const { result, content, approval } = await runTool(call.name, args);
+        toolsUsed.push({ name: call.name, args, ok: result?.ok !== false, approval: !!approval });
+        if (approval) {
+          approvals.push(approval);
+          if (onApproval) onApproval(approval);
+        } else if (!approvalTool && onTool) {
+          onTool({ phase: 'done', name: call.name, args, result });
+        }
         messages.push({ role: 'tool', tool_call_id: call.id, content });
       }
+      // A write was proposed — stop and let the operator approve/reject. Do NOT call the model again.
+      if (approvals.length) return { reply: (res.text || '').trim(), model: modelUsed, toolsUsed, approvals };
       continue;
     }
     const text = (res.text || '').trim();
@@ -795,17 +806,30 @@ YOU ALSO RECEIVE A LIVE DATA SNAPSHOT (the same decision digest + strategist sum
 - today / trend7 (incl. CPM + earlySaturation) / concentration / dayparting / creative / saturation / segments {gender,age,platform,...} / signal (CAPI) / growth (funnel, abandoner pool, headroom, value readiness, ranked levers).
 - campaigns/adsets (strategist summary): names, status, spend, kpiCpa, kpiCount (conversions in window), roas, frequency.
 
-TOOLS (read-only — call them when the snapshot is not enough; they never change anything in Meta):
-- get_fresh_insights(level, name?, window?, breakdown?): pull LIVE numbers for the account / a campaign / an ad set, optionally segmented (age_gender, country, platform, placement, device, hourly). Use it when the operator asks about current/today's numbers, a specific entity, or a segment the snapshot doesn't break out — don't guess from a stale snapshot.
+READ TOOLS (safe, auto-run — they never change anything in Meta):
+- get_fresh_insights(level, name?, window?, breakdown?): pull LIVE numbers for the account / a campaign / an ad set, optionally segmented (age_gender, country, platform, placement, device, hourly). window accepts today, yesterday, last_7d…last_90d. Use it when the operator asks about current/today's/yesterday's numbers, a specific entity, or a segment the snapshot doesn't break out — don't guess from a stale snapshot.
 - get_change_history(name?, limit?): recent edits (budget/status/targeting, who & when). Use to check "what changed before X" or whether a recent edit reset learning.
 - get_ad_preview(name): renders the actual creative inline for the operator. Use when discussing a creative refresh.
 - re_analyze(window?): refresh the whole snapshot. Slower — prefer get_fresh_insights for one entity.
+
+WRITE TOOLS (Tier 2 — they NEVER execute; calling one stages an approval card the operator clicks Approve/Reject on. The card IS the confirmation):
+- pause_entity(level, name, reason) / resume_entity(level, name, reason): turn an ad set / campaign OFF or ON.
+- set_budget(level, name, daily_budget, reason): set a new DAILY budget (account currency, e.g. 120 = $120). Target the AD SET on this ABO account. Keep within ~20% of current.
+- duplicate_entity(level, name, reason): make a PAUSED copy (for surf-scaling / testing a cost cap on a copy; the source is untouched).
+CRITICAL: when the operator asks you to pause/turn off, scale/raise budget, duplicate/clone, or "propose"/"prepare"/"set up" any such change, CALL the matching write tool RIGHT AWAY. Do NOT reply with "would you like me to propose…?" — calling the tool is how you propose, and the operator approves on the card. State your one-line rationale (it becomes the card's reason) and call the tool in the same turn. Only ask a question first if the target entity is genuinely ambiguous (multiple plausible matches). After a rejection, adapt — don't re-propose the same thing.
+
+INFER TOOLS SEMANTICALLY — the operator will almost NEVER name a tool. Read their intent and pick the right tool + args yourself:
+- Map their words to a REAL entity name from the snapshot: "the French campaign" → the campaign whose name contains "France"; "Mariana's ad set" → the ad set with "Mariana". If nothing matches, say so and list the closest names.
+- Map time words to windows: "yesterday" → yesterday, "today" → today, "this week"/"lately" → last_7d, "this month" → last_30d.
+- "how does it compare to the rest / the account" → also pull level:"account" (or read the snapshot) and contrast.
+- "scale / bump / raise budget" → set_budget; "kill / turn off / stop" → pause_entity; "clone / test a cap / make a copy" → duplicate_entity; "what changed / did someone edit" → get_change_history.
+- Example: "check yesterday's french campaign and tell me how it compares to rest" → get_fresh_insights(level:"campaign", name:"France", window:"yesterday") AND get_fresh_insights(level:"account", window:"yesterday"), then contrast. Do this WITHOUT being told which tool to use.
 When you call a tool, fetch FIRST, then answer using the returned numbers (cite them). Prefer one targeted tool call over many. If a question is fully answerable from the snapshot, just answer — don't call a tool needlessly.
 
 HOW TO ANSWER:
 - Be a concrete, practical operator — give the actual NUMBER and the STRUCTURE, not vague advice. If they ask for a cost cap, compute a starting value from THIS entity's numbers in the snapshot (e.g. cap ≈ current cost-per-result × ~1.1-1.2 as a ceiling), name the entity, and lay out the steps (duplicate the ad set → set the cap on the COPY → keep the live winner on Lowest Cost → watch delivery 48-72h → revert if it stalls). Quote the entity's current CPA/volume from the snapshot.
 - Respect the gates. Cost/Bid Cap is only sane on an entity above ~50 conv/week (the snapshot's kpiCount is per-window — convert to weekly). Below that, say plainly that a cap will starve delivery and recommend Lowest Cost. Value Optimization needs CAPI + ~50-100 purchases/wk. Don't recommend a gated move as if it were ready.
-- Always SUGGEST ONLY — you never make changes; the operator applies them manually in Meta. Frame as recommendations and call out the risk + the revert condition.
+- You can PROPOSE a change with a write tool, but it only happens if the operator clicks Approve — you never apply anything silently. Always call out the risk + the revert condition. For gated moves (cost cap, value optimization) that aren't ready, recommend in words rather than proposing a write.
 - Ground every number in the snapshot. NEVER invent campaigns, metrics, audiences, or competitor data. If the snapshot lacks something, say it's unknown and what you'd need.
 - Prefer ONE clear recommendation over a laundry list. Sequence changes (apply one, re-measure) — never tell them to stack five edits at once (it resets learning).
 - Keep it tight and skimmable: short paragraphs or a few bullets, plain English, no fluff. Use the donation context (variable donation sizes, one pixel shared across beneficiaries = a strong lookalike seed).`;
@@ -852,20 +876,21 @@ function buildChatMessages({ message, history = [], last }) {
   ];
 }
 
-// Non-streaming (used by scripts/curl). Supports the same read-only tool loop.
-export async function strategyChat({ message, history = [], last, tools, runTool, onTool }) {
+// Non-streaming (used by scripts/curl). Supports the read-only tool loop + write approval proposals.
+export async function strategyChat({ message, history = [], last, tools, runTool, onTool, onApproval, isApprovalTool }) {
   const messages = buildChatMessages({ message, history, last });
-  const { reply, model, toolsUsed } = await runChatAgent({ messages, tools, runTool, onTool, maxTokens: 1100, temperature: 0.35 });
-  return { reply, model, toolsUsed };
+  const { reply, model, toolsUsed, approvals } = await runChatAgent({ messages, tools, runTool, onTool, onApproval, isApprovalTool, maxTokens: 1100, temperature: 0.35 });
+  return { reply, model, toolsUsed, approvals };
 }
 
 // Streaming variant: invokes onDelta(textChunk) as the FINAL answer tokens arrive (tool-request
-// steps stream nothing), and onTool(...) as read-only tools run. Falls back to the secondary model
+// steps stream nothing), onTool(...) as read-only tools run, and onApproval(...) when a write tool
+// proposes a change (the loop then stops for operator approval). Falls back to the secondary model
 // only before any answer token has streamed.
-export async function strategyChatStream({ message, history = [], last, onDelta, onTool, tools, runTool }) {
+export async function strategyChatStream({ message, history = [], last, onDelta, onTool, onApproval, isApprovalTool, tools, runTool }) {
   const messages = buildChatMessages({ message, history, last });
-  const { reply, model, toolsUsed } = await runChatAgent({ messages, tools, runTool, onDelta, onTool, maxTokens: 1100, temperature: 0.35 });
-  return { reply, model, toolsUsed };
+  const { reply, model, toolsUsed, approvals } = await runChatAgent({ messages, tools, runTool, onDelta, onTool, onApproval, isApprovalTool, maxTokens: 1100, temperature: 0.35 });
+  return { reply, model, toolsUsed, approvals };
 }
 
 export async function suggestReply({ comment, analysis, postCtx, thread }) {

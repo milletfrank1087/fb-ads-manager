@@ -140,6 +140,7 @@ export const safety = {
       readonly: config.readonly,
       allowCommentModeration: config.allowCommentModeration,
       allowAdManagement: config.allowAdManagement,
+      allowAdvisorWrites: config.allowAdvisorWrites,
       primaryAccountId: config.primaryAccountId,
       primaryAccountTz: config.primaryAccountTz,
       dailyCallCap: config.maxDailyCalls,
