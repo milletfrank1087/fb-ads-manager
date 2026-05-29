@@ -379,7 +379,9 @@ function targetingDecisions(segGroups, kpi) {
   const out = [];
   const consider = segGroups.flatMap(({ kind, rows }) => rows.map((s) => ({ ...s, kind })));
   for (const s of consider) {
-    if (s.verdict === 'worse' && (s.confidence === 'high' || s.confidence === 'medium') && nz(s.shareSpend) >= 8) {
+    // Impact floor (≥5% of spend): only flag a segment worth acting on, but low enough to surface a
+    // statistically-confident loser like an underperforming placement/platform carrying ~5-8% of spend.
+    if (s.verdict === 'worse' && (s.confidence === 'high' || s.confidence === 'medium') && nz(s.shareSpend) >= 5) {
       out.push({
         scope: 'targeting', action: 'narrow_targeting', segment: s.label, kind: s.kind,
         confidence: { tier: s.confidence, score: s.confidenceScore }, confidenceScore: s.confidenceScore,
@@ -450,6 +452,10 @@ export function buildDecisionDigest(ctx) {
     gender: buildSegments(ageGenderRows, kpi, segmentBaselineCpa, (r) => r.gender ? r.gender[0].toUpperCase() + r.gender.slice(1) : '?'),
     age: buildSegments(ageGenderRows, kpi, segmentBaselineCpa, (r) => r.age || '?'),
     placement: buildSegments(placementRows, kpi, segmentBaselineCpa, (r) => `${r.publisher_platform || '?'} · ${(r.platform_position || '').replace(/_/g, ' ')}`.trim()),
+    // Platform rollup (FB / IG / Audience Network / Messenger): granular placement cells are often
+    // too small to clear the CI, but pooling by platform pools enough volume to confidently flag a
+    // junk platform (Audience Network is the classic ecommerce exclusion). Valid within-campaign lever.
+    platform: buildSegments(placementRows, kpi, segmentBaselineCpa, (r) => (r.publisher_platform || '?').replace(/_/g, ' ')),
     // Country can be 40+ rows (one per country reached); cap to the top 15 by spend so it neither
     // bloats the AI prompt (truncated at a char budget) nor the UI. UI only renders the top 6 anyway.
     country: buildSegments(countryRows, kpi, segmentBaselineCpa, (r) => r.country || '?').slice(0, 15),
@@ -466,6 +472,7 @@ export function buildDecisionDigest(ctx) {
   const targeting = targetingDecisions([
     { kind: 'gender', rows: segments.gender },
     { kind: 'age band', rows: segments.age },
+    { kind: 'platform', rows: segments.platform },
     { kind: 'age/gender', rows: segments.ageGender },
     { kind: 'placement', rows: segments.placement },
     { kind: 'device', rows: segments.device },
