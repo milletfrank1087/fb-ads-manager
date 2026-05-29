@@ -251,6 +251,7 @@ function dashboard() {
       data: null,
       narrative: null,
       briefing: null,
+      copied: false,
       error: '',
     },
     strategyWindows: [
@@ -1082,6 +1083,31 @@ function dashboard() {
         this.strategy.briefing = { error: String(e) };
       } finally {
         this.strategy.briefingLoading = false;
+      }
+    },
+    async copyBriefing() {
+      const b = this.strategy.briefing;
+      if (!b || b.error) return;
+      const lines = [];
+      if (b.headline) lines.push(b.headline, '');
+      if (b.standing_today) lines.push(b.standing_today, '');
+      if (b.confident_actions && b.confident_actions.length) {
+        lines.push('CONFIDENT ACTIONS:');
+        b.confident_actions.forEach((a) => {
+          lines.push(`- [${a.confidence}] ${a.title} — ${a.why}` + (a.what_to_wait_for ? ` (wait: ${a.what_to_wait_for})` : ''));
+        });
+        lines.push('');
+      }
+      if (b.opportunities && b.opportunities.length) { lines.push('OPPORTUNITIES:'); b.opportunities.forEach((o) => lines.push(`- ${o}`)); lines.push(''); }
+      if (b.watch && b.watch.length) { lines.push('WATCH (not yet confident):'); b.watch.forEach((w) => lines.push(`- ${w}`)); lines.push(''); }
+      if (b.do_not_act && b.do_not_act.length) { lines.push("DON'T OVERREACT TO:"); b.do_not_act.forEach((n) => lines.push(`- ${n}`)); }
+      const text = lines.join('\n').trim();
+      try {
+        await navigator.clipboard.writeText(text);
+        this.strategy.copied = true;
+        setTimeout(() => { this.strategy.copied = false; }, 1800);
+      } catch (e) {
+        console.error('[strategy] copy briefing failed', e);
       }
     },
     async runStrategyNarrative() {

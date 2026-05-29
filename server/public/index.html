@@ -854,6 +854,16 @@
             <template x-if="strategy.data && strategy.tab==='briefing' && strategy.data.decisions">
               <div class="space-y-5" x-data="{ d: strategy.data.decisions }">
 
+                <!-- confidence legend -->
+                <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-meta-gray-600 bg-meta-gray-50 border border-gray-200 rounded-lg px-3 py-2" title="How to read confidence: every action is gated by conversion sample size, how many days the signal persisted, and a day-of-week-adjusted anomaly check. Only act on high/medium.">
+                  <span class="font-semibold text-meta-gray-700">Confidence:</span>
+                  <span class="flex items-center gap-1"><span class="px-1.5 py-0.5 rounded border bg-green-50 text-green-700 border-green-200 font-semibold">high</span> act now</span>
+                  <span class="flex items-center gap-1"><span class="px-1.5 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200 font-semibold">medium</span> act, watch closely</span>
+                  <span class="flex items-center gap-1"><span class="px-1.5 py-0.5 rounded border bg-yellow-50 text-yellow-700 border-yellow-200 font-semibold">low</span> wait for more data</span>
+                  <span class="flex items-center gap-1"><span class="px-1.5 py-0.5 rounded border bg-gray-100 text-gray-500 border-gray-300 font-semibold">insufficient</span> too few conversions</span>
+                  <span class="text-meta-gray-400">· σ = std-devs from the day-of-week norm (|σ|≥2 = unusual)</span>
+                </div>
+
                 <!-- today vs normal -->
                 <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
                   <div class="px-4 py-2 border-b border-gray-100 flex items-center gap-2">
@@ -892,17 +902,32 @@
                         </div>
                         <div class="text-[12px] mt-3" :class="verdictClass(d.today.verdict)" x-text="d.today.note"></div>
                         <template x-if="d.trend7 && d.trend7.reliable">
-                          <div class="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 md:grid-cols-4 gap-2 text-[12px]" title="Last 7 days vs the prior 7 days — a week-over-week read that is naturally day-of-week balanced. This is more trustworthy than any single day.">
-                            <div><span class="text-meta-gray-500">7d cost/</span><span x-text="d.kpi"></span>: <span class="font-medium" x-text="d.trend7.last7.cpa==null?'—':'$'+d.trend7.last7.cpa"></span> <span :class="(d.trend7.cpaChangePct||0)>0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.cpaChangePct)+')'"></span></div>
-                            <div><span class="text-meta-gray-500">7d ROAS:</span> <span class="font-medium" x-text="fmtRoasX(d.trend7.last7.roas)"></span> <span :class="(d.trend7.roasChangePct||0)<0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.roasChangePct)+')'"></span></div>
-                            <div><span class="text-meta-gray-500">7d conv:</span> <span class="font-medium" x-text="d.trend7.last7.conv"></span> <span :class="(d.trend7.convChangePct||0)<0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.convChangePct)+')'"></span></div>
-                            <div><span class="text-meta-gray-500">7d CTR:</span> <span class="font-medium" x-text="(d.trend7.last7.ctr??'—')+'%'"></span> <span :class="(d.trend7.ctrChangePct||0)<0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.ctrChangePct)+')'"></span></div>
+                          <div>
+                            <div class="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 md:grid-cols-5 gap-2 text-[12px]" title="Last 7 days vs the prior 7 days — a week-over-week read that is naturally day-of-week balanced. This is more trustworthy than any single day.">
+                              <div><span class="text-meta-gray-500">7d cost/</span><span x-text="d.kpi"></span>: <span class="font-medium" x-text="d.trend7.last7.cpa==null?'—':'$'+d.trend7.last7.cpa"></span> <span :class="(d.trend7.cpaChangePct||0)>0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.cpaChangePct)+')'"></span></div>
+                              <div><span class="text-meta-gray-500">7d ROAS:</span> <span class="font-medium" x-text="fmtRoasX(d.trend7.last7.roas)"></span> <span :class="(d.trend7.roasChangePct||0)<0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.roasChangePct)+')'"></span></div>
+                              <div><span class="text-meta-gray-500">7d conv:</span> <span class="font-medium" x-text="d.trend7.last7.conv"></span> <span :class="(d.trend7.convChangePct||0)<0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.convChangePct)+')'"></span></div>
+                              <div><span class="text-meta-gray-500">7d CTR:</span> <span class="font-medium" x-text="(d.trend7.last7.ctr??'—')+'%'"></span> <span :class="(d.trend7.ctrChangePct||0)<0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.ctrChangePct)+')'"></span></div>
+                              <div title="Rising CPM at a flat/holding CTR is the earliest saturation signal — it shows up before CPA visibly climbs."><span class="text-meta-gray-500">7d CPM:</span> <span class="font-medium" x-text="d.trend7.last7.cpm==null?'—':'$'+d.trend7.last7.cpm"></span> <span :class="(d.trend7.cpmChangePct||0)>0?'text-red-600':'text-green-600'" x-text="'('+fmtPctSigned(d.trend7.cpmChangePct)+')'"></span></div>
+                            </div>
+                            <div x-show="d.trend7.earlySaturation" class="mt-2 text-[12px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5" x-text="'⚠ ' + d.trend7.note"></div>
                           </div>
                         </template>
                       </div>
                     </template>
                   </div>
                 </div>
+
+                <!-- concentration risk -->
+                <template x-if="d.concentration && d.concentration.reliable">
+                  <div class="rounded-lg border p-3 flex items-start gap-3" :class="d.concentration.verdict==='concentrated' ? 'border-amber-200 bg-amber-50/60' : 'border-gray-200 bg-white'">
+                    <span class="mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border flex-shrink-0" :class="d.concentration.verdict==='concentrated' ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-green-50 text-green-700 border-green-200'" x-text="d.concentration.verdict"></span>
+                    <div class="flex-1 min-w-0">
+                      <div class="text-sm font-medium">Spend concentration — top campaign <span x-text="d.concentration.topShare + '%'"></span> of active spend</div>
+                      <div class="text-[12px] text-meta-gray-600 mt-0.5" x-text="d.concentration.note"></div>
+                    </div>
+                  </div>
+                </template>
 
                 <!-- AI daily briefing -->
                 <div class="bg-white rounded-lg border border-indigo-200 overflow-hidden">
@@ -911,6 +936,7 @@
                     <span class="text-sm font-semibold text-indigo-900">AI daily briefing</span>
                     <span x-show="strategy.briefingLoading" class="text-[11px] text-indigo-500">generating…</span>
                     <span class="flex-1"></span>
+                    <button @click="copyBriefing()" x-show="strategy.briefing && !strategy.briefing.error" class="text-[11px] text-indigo-600 hover:underline mr-3" title="Copy this briefing as plain text." x-text="strategy.copied ? 'copied ✓' : 'copy'"></button>
                     <button @click="runBriefing()" :disabled="strategy.briefingLoading" class="text-[11px] text-indigo-600 hover:underline" title="Regenerate the AI briefing from the latest numbers.">refresh</button>
                   </div>
                   <div class="p-4">
@@ -1023,6 +1049,54 @@
                         </template>
                       </tbody>
                     </table>
+                  </div>
+                </div>
+
+                <!-- geo & device context -->
+                <div class="grid md:grid-cols-2 gap-4">
+                  <div class="bg-white rounded-lg border border-gray-200">
+                    <div class="px-4 py-2 border-b border-gray-100 flex items-center gap-2">
+                      <span class="text-sm font-semibold">Geo (context)</span>
+                      <span class="text-[11px] text-meta-gray-500" title="This account runs one campaign per country, so geo here ≈ whole campaigns — use it to read which countries carry the account, not to exclude a country. Top 6 by spend.">≈ per-country campaigns · vs $<span x-text="d.baselineCpa"></span></span>
+                    </div>
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-[12px]">
+                        <thead><tr class="text-meta-gray-500 text-left border-b border-gray-100"><th class="font-medium px-3 py-1.5">Country</th><th class="font-medium text-right">Spend</th><th class="font-medium text-right" x-text="d.kpi"></th><th class="font-medium text-right">Cost</th><th class="font-medium text-center">Verdict</th></tr></thead>
+                        <tbody>
+                          <template x-for="s in d.segments.country.slice(0,6)" :key="s.label">
+                            <tr class="border-b border-gray-50" :class="s.verdict==='worse' ? 'bg-red-50/40' : (s.verdict==='better' ? 'bg-green-50/40' : '')">
+                              <td class="px-3 py-1.5 font-medium" x-text="s.label"></td>
+                              <td class="text-right" x-text="'$'+s.spend"></td>
+                              <td class="text-right" x-text="s.conv"></td>
+                              <td class="text-right" x-text="s.cpa==null?'—':'$'+s.cpa"></td>
+                              <td class="text-center font-medium" :class="verdictClass(s.verdict)" x-text="s.verdict==='insufficient'?'—':s.verdict"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div class="bg-white rounded-lg border border-gray-200">
+                    <div class="px-4 py-2 border-b border-gray-100 flex items-center gap-2">
+                      <span class="text-sm font-semibold">Device</span>
+                      <span class="text-[11px] text-meta-gray-500" title="Performance by device. Device IS a valid within-campaign targeting lever (e.g. excluding a weak device). Compared to the account-blended cost.">within-campaign lever · vs $<span x-text="d.baselineCpa"></span></span>
+                    </div>
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-[12px]">
+                        <thead><tr class="text-meta-gray-500 text-left border-b border-gray-100"><th class="font-medium px-3 py-1.5">Device</th><th class="font-medium text-right">Spend</th><th class="font-medium text-right" x-text="d.kpi"></th><th class="font-medium text-right">Cost</th><th class="font-medium text-center">Verdict</th></tr></thead>
+                        <tbody>
+                          <template x-for="s in d.segments.device.slice(0,6)" :key="s.label">
+                            <tr class="border-b border-gray-50" :class="s.verdict==='worse' ? 'bg-red-50/40' : (s.verdict==='better' ? 'bg-green-50/40' : '')">
+                              <td class="px-3 py-1.5 font-medium" x-text="s.label"></td>
+                              <td class="text-right" x-text="'$'+s.spend"></td>
+                              <td class="text-right" x-text="s.conv"></td>
+                              <td class="text-right" x-text="s.cpa==null?'—':'$'+s.cpa"></td>
+                              <td class="text-center font-medium" :class="verdictClass(s.verdict)" x-text="s.verdict==='insufficient'?'—':s.verdict"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
 

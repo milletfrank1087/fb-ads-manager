@@ -105,6 +105,8 @@ export async function analyzeStrategy({ window = 'last_30d' } = {}) {
     { name: 'bd_placement', method: 'GET', relative_url: `${acct}/insights?date_preset=${window}&breakdowns=publisher_platform,platform_position&fields=${bdFields}&limit=200` },
     { name: 'bd_agegender', method: 'GET', relative_url: `${acct}/insights?date_preset=${window}&breakdowns=age,gender&fields=${bdFields}&limit=200` },
     { name: 'bd_hourly', method: 'GET', relative_url: `${acct}/insights?date_preset=${window}&breakdowns=hourly_stats_aggregated_by_advertiser_time_zone&fields=${bdFields}&limit=200` },
+    { name: 'bd_country', method: 'GET', relative_url: `${acct}/insights?date_preset=${window}&breakdowns=country&fields=${bdFields}&limit=200` },
+    { name: 'bd_device', method: 'GET', relative_url: `${acct}/insights?date_preset=${window}&breakdowns=impression_device&fields=${bdFields}&limit=200` },
     // ----- decision-grade additions -----
     { name: 'camp_daily', method: 'GET', relative_url: `${acct}/insights?level=campaign&date_preset=last_90d&time_increment=1&fields=campaign_id,campaign_name,spend,impressions,reach,inline_link_clicks,actions,action_values&limit=500` },
     { name: 'ad_ranking', method: 'GET', relative_url: `${acct}/insights?level=ad&date_preset=${window}&fields=ad_id,ad_name,campaign_name,adset_name,impressions,spend,frequency,quality_ranking,engagement_rate_ranking,conversion_rate_ranking,actions&filtering=${activeAdFilter}&sort=impressions_descending&limit=200` },
@@ -129,6 +131,8 @@ export async function analyzeStrategy({ window = 'last_30d' } = {}) {
   const placementRows = sub('bd_placement');
   const ageGenderRows = sub('bd_agegender');
   const hourlyRows = sub('bd_hourly');
+  const countryRows = sub('bd_country');
+  const deviceRows = sub('bd_device');
   const campDailyRows = sub('camp_daily');
   const adRankingRows = sub('ad_ranking');
   const reachWindows = {
@@ -311,7 +315,7 @@ export async function analyzeStrategy({ window = 'last_30d' } = {}) {
     decisions = buildDecisionDigest({
       kpi, totals, campaigns, adsets, medianRoas, medianKpiCpa,
       sortedDaily, campDailyRows, adRankingRows, reachWindows,
-      ageGenderRows, placementRows,
+      ageGenderRows, placementRows, countryRows, deviceRows,
       capiDetected: null, // dataset_quality came back empty for this account; surfaced as advisory
     });
   } catch (e) {

@@ -11,6 +11,20 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-05-29 AI brain v2 — community playbook + enriched signals + scale-up gate
+
+Sprint to make the advisor "better than SOTA": feed it the best community (non-Meta) strategy and richer data, while keeping the confidence discipline.
+
+- **Curated community playbook is now the AI's brain** (`COMMUNITY_PLAYBOOK` in `analyzer.js`, injected into both strategy + briefing prompts). Distilled from 2026 ecommerce/practitioner sources (Skaleit, RocketshipHQ, trycrush, Wevion, Instrumnt, r/PPC-style write-ups) and **deliberately excludes Meta's own in-app advice** (it optimizes for spend, not ROI). Cross-validated, and includes the disconfirming nuances: consolidation's saturation-cliff risk, Advantage+ attribution cannibalization, bid-cap-beats-cost-cap (only >50 conv/wk), frequency<1.5 = valuable TOF driver, which-metric-broke-first diagnostic. The prompt is explicit: **playbook = what good looks like; the decision digest = whether THIS account has the evidence.**
+- **CPM is the earliest saturation signal — added to `trend7`.** Rising CPM (≥15% WoW) at a flat/holding CTR fires `earlySaturation` and precedes the visible CPA spike. Live caught it: account CPM +32.8% WoW with CTR holding → amber banner + the AI headline "early signs of creative fatigue". Far earlier than waiting for CPA to blow out.
+- **Concentration risk (`buildConcentration`).** One campaign >40% of active spend = `concentrated`. Live: GBM Mariana-Portugal = 65.9% → flagged. Counter-point to naive "consolidate everything"; a single fatigue cycle can take the account down.
+- **Geo + device breakdowns added** (`bd_country`, `bd_device`). **Gotcha:** this account runs one campaign per country, so an account-level country verdict ≈ a whole campaign. Country is therefore **context-only** (excluded from targeting *actions*) — recommending "exclude country ES" would be nonsense when ES is its own campaign. Device IS a valid within-campaign lever and stays actionable.
+- **Scale-up safety gate (the important bug).** The engine flagged Portugal `scale_up` on a 3-day winning streak while its **7-day ROAS was −33% / CPA +58%**. Per the playbook ("never scale into a degrading weekly trend") this is wrong. Added a WoW gate: a 3-day streak is downgraded to `hold` when WoW ROAS ≤ −20% or WoW CPA ≥ +25%. Recent-days momentum and weekly trend can disagree — the weekly trend wins for scaling decisions.
+- **Per-campaign `wow`** (last-7d vs prior-7d cpa/roas/conv) attached to every campaign decision so the AI can cite the trend ("Portugal CPA +58% WoW") instead of just a point estimate.
+- **UX:** confidence legend (high/medium/low/insufficient + σ), copy-briefing button, early-saturation + concentration cards, 7d CPM column, geo/device tables. All verified in-browser, no console errors (only the benign Tailwind-CDN notice).
+
+---
+
 ## 2026-05-29 Strategy advisor (suggest-only performance AI)
 
 Built `server/lib/strategist.js` + the header **Strategy** drawer: analyze the account, propose a ranked plan, never write.

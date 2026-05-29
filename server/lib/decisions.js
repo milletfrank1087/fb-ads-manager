@@ -41,6 +41,7 @@ function aggDaily(rows, kpi) {
   a.cpa = a.kpi > 0 ? round(a.spend / a.kpi) : null;
   a.roas = a.spend > 0 && a.value > 0 ? round(a.value / a.spend) : null;
   a.ctr = a.impressions > 0 ? round((a.clicks / a.impressions) * 100, 3) : null;
+  a.cpm = a.impressions > 0 ? round((a.spend / a.impressions) * 1000) : null;
   return a;
 }
 
@@ -100,14 +101,38 @@ function buildTrend7(sortedDaily, kpi) {
   if (completes.length < 14) return { reliable: false };
   const last7 = aggDaily(completes.slice(-7), kpi);
   const prior7 = aggDaily(completes.slice(-14, -7), kpi);
+  const cpmChange = pctChange(prior7.cpm, last7.cpm);
+  const ctrChange = pctChange(prior7.ctr, last7.ctr);
+  // Earliest saturation tell (per playbook): CPM rising while CTR flat/holding precedes the CPA spike.
+  const earlySaturation = cpmChange != null && cpmChange >= 15 && (ctrChange == null || ctrChange > -10);
   return {
     reliable: true,
-    last7: { spend: round(last7.spend), conv: last7.kpi, cpa: last7.cpa, roas: last7.roas, ctr: last7.ctr },
-    prior7: { spend: round(prior7.spend), conv: prior7.kpi, cpa: prior7.cpa, roas: prior7.roas, ctr: prior7.ctr },
+    last7: { spend: round(last7.spend), conv: last7.kpi, cpa: last7.cpa, roas: last7.roas, ctr: last7.ctr, cpm: last7.cpm },
+    prior7: { spend: round(prior7.spend), conv: prior7.kpi, cpa: prior7.cpa, roas: prior7.roas, ctr: prior7.ctr, cpm: prior7.cpm },
     cpaChangePct: pctChange(prior7.cpa, last7.cpa),
     roasChangePct: pctChange(prior7.roas, last7.roas),
-    ctrChangePct: pctChange(prior7.ctr, last7.ctr),
+    ctrChangePct: ctrChange,
+    cpmChangePct: cpmChange,
     convChangePct: pctChange(prior7.kpi, last7.kpi),
+    earlySaturation,
+    note: earlySaturation ? 'CPM is rising while CTR holds — the earliest saturation signal, before CPA visibly spikes. Watch frequency and queue a creative refresh.' : null,
+  };
+}
+
+// Concentration risk (per playbook counter-point): one campaign carrying too much of account spend
+// is one fatigue cycle from a step-function "saturation cliff". Flag when any active campaign >40%.
+function buildConcentration(campaigns) {
+  const active = campaigns.filter((c) => c.status === 'ACTIVE' && nz(c.spend) > 0);
+  const total = active.reduce((s, c) => s + nz(c.spend), 0);
+  if (total <= 0 || !active.length) return { reliable: false };
+  const top = [...active].sort((a, b) => nz(b.spend) - nz(a.spend))[0];
+  const share = round((nz(top.spend) / total) * 100, 1);
+  return {
+    reliable: true, topName: top.name, topShare: share, activeCount: active.length,
+    verdict: share >= 40 ? 'concentrated' : 'diversified',
+    note: share >= 40
+      ? `${top.name} carries ${share}% of active spend. That concentration is efficient but fragile — one fatigue cycle can take the account down. Build the next 2-3 winners in parallel and cap any single campaign near ~40% of spend.`
+      : `Spend is spread across ${active.length} active campaigns (top = ${share}%). Healthy diversification against creative fatigue.`,
   };
 }
 
@@ -211,6 +236,16 @@ function campaignDecisions({ campaigns, campDailyRows, kpi, medianRoas, medianKp
     const last7 = aggDaily(series.slice(-7), kpi);
     const prior7 = aggDaily(series.slice(-14, -7), kpi);
     const windowConv = nz(c.kpiCount);
+    // Week-over-week movement (last 7d vs prior 7d) — used both as a scale-up SAFETY GATE
+    // (playbook: never scale into a degrading weekly trend) and surfaced for the AI.
+    const wow = {
+      cpaChangePct: pctChange(prior7.cpa, last7.cpa),
+      roasChangePct: pctChange(prior7.roas, last7.roas),
+      convChangePct: pctChange(prior7.kpi, last7.kpi),
+      last7: { cpa: last7.cpa, roas: last7.roas, conv: last7.kpi, spend: round(last7.spend) },
+    };
+    const wowDegrading = (wow.roasChangePct != null && wow.roasChangePct <= -20) ||
+      (wow.cpaChangePct != null && wow.cpaChangePct >= 25);
 
     // persistence: count of most-recent consecutive complete days breaching the kill / scale band
     let killStreak = 0; let goodStreak = 0;
@@ -241,7 +276,14 @@ function campaignDecisions({ campaigns, campDailyRows, kpi, medianRoas, medianKp
         `${kpi.label} cost has been above ${money(round(medianKpiCpa * CPA_KILL_MULT))} (1.5× the account median) for ${killStreak} straight days. Cut budget ~25-30% or pause the weakest ad set — this is a sustained loss, not a blip.`,
         { cpa7: last7.cpa, medianKpiCpa, killStreak });
     }
-    // 2) scale up — sustained winner with headroom
+    // 2a) winner on recent days BUT the 7d trend is degrading → do NOT scale (playbook gate)
+    else if (goodStreak >= 3 && windowConv >= MIN_CONV_TO_JUDGE && wowDegrading) {
+      decision = mk('hold', c, decisionConfidence({ conversions: windowConv, persistenceDays: goodStreak }),
+        `Recent days beat the median, but week-over-week is sliding (ROAS ${fmtPct(wow.roasChangePct)}, cost/${kpi.label} ${fmtPct(wow.cpaChangePct)}). The playbook rule is: never scale into a degrading weekly trend. Hold budget, refresh creative, and only scale once the 7-day trend turns back up.`,
+        { roas7: last7.roas, cpa7: last7.cpa, wow });
+      decision.whatToWaitFor = `Wait for the 7-day ROAS/cost trend to stabilise or improve before adding budget.`;
+    }
+    // 2) scale up — sustained winner with headroom (and weekly trend not degrading)
     else if (goodStreak >= 3 && windowConv >= MIN_CONV_TO_JUDGE && (freq == null || freq < 2)) {
       decision = mk(c.isCBO ? 'scale_up' : 'scale_up', c, decisionConfidence({ conversions: windowConv, persistenceDays: goodStreak, clearedNoise: true }),
         c.isCBO
@@ -282,6 +324,7 @@ function campaignDecisions({ campaigns, campDailyRows, kpi, medianRoas, medianKp
     if (decision.confidence.tier !== 'high' && !decision.whatToWaitFor && decision.action !== 'hold') {
       decision.whatToWaitFor = `Confirm the pattern holds another ${decision.confidence.tier === 'medium' ? '1-2' : '2-3'} days (and ≥${MIN_CONV_TO_JUDGE} ${kpi.label}) before committing budget.`;
     }
+    decision.wow = wow;
     out.push(decision);
   }
   return out;
@@ -295,12 +338,13 @@ function mk(action, c, confidence, rationale, evidence) {
   };
 }
 function money(n) { return n == null ? '—' : `$${round(n, 2)}`; }
+function fmtPct(n) { return n == null ? 'n/a' : `${n > 0 ? '+' : ''}${n}%`; }
 
 // ---------- targeting decisions from segments ----------
 
-function targetingDecisions(ageGenderSegs, placementSegs, kpi) {
+function targetingDecisions(segGroups, kpi) {
   const out = [];
-  const consider = [...ageGenderSegs.map((s) => ({ ...s, kind: 'age/gender' })), ...placementSegs.map((s) => ({ ...s, kind: 'placement' }))];
+  const consider = segGroups.flatMap(({ kind, rows }) => rows.map((s) => ({ ...s, kind })));
   for (const s of consider) {
     if (s.verdict === 'worse' && (s.confidence === 'high' || s.confidence === 'medium') && nz(s.shareSpend) >= 8) {
       out.push({
@@ -348,7 +392,7 @@ export function buildDecisionDigest(ctx) {
   const {
     kpi, totals, campaigns, adsets, medianRoas, medianKpiCpa,
     sortedDaily, campDailyRows, adRankingRows, reachWindows,
-    ageGenderRows, placementRows, capiDetected,
+    ageGenderRows, placementRows, countryRows = [], deviceRows = [], capiDetected,
   } = ctx;
 
   // Segment verdicts compare each cell to the ACCOUNT-BLENDED CPA (spend/conversions across the
@@ -367,10 +411,21 @@ export function buildDecisionDigest(ctx) {
   const segments = {
     ageGender: buildSegments(ageGenderRows, kpi, segmentBaselineCpa, (r) => `${r.age || '?'} · ${r.gender || '?'}`),
     placement: buildSegments(placementRows, kpi, segmentBaselineCpa, (r) => `${r.publisher_platform || '?'} · ${(r.platform_position || '').replace(/_/g, ' ')}`.trim()),
+    country: buildSegments(countryRows, kpi, segmentBaselineCpa, (r) => r.country || '?'),
+    device: buildSegments(deviceRows, kpi, segmentBaselineCpa, (r) => (r.impression_device || '?').replace(/_/g, ' ')),
   };
 
+  const concentration = buildConcentration(campaigns);
+
   const entityDecisions = campaignDecisions({ campaigns, campDailyRows, kpi, medianRoas, medianKpiCpa, creativeByCampaign });
-  const targeting = targetingDecisions(segments.ageGender, segments.placement, kpi);
+  // NOTE: country is intentionally excluded from targeting ACTIONS — this account runs one campaign
+  // per country, so an account-level country verdict ≈ a whole campaign (handled by campaign decisions);
+  // recommending "exclude country X" would be misleading. Country stays in `segments` for context only.
+  const targeting = targetingDecisions([
+    { kind: 'age/gender', rows: segments.ageGender },
+    { kind: 'placement', rows: segments.placement },
+    { kind: 'device', rows: segments.device },
+  ], kpi);
   const capFlags = capGraduationFlags(adsets, kpi);
 
   const signal = {
@@ -393,7 +448,7 @@ export function buildDecisionDigest(ctx) {
     kpi: kpi.label,
     baselineCpa: round(segmentBaselineCpa),
     medianCampaignCpa: round(medianKpiCpa),
-    today, trend7, saturation, signal, creative, segments,
+    today, trend7, saturation, signal, creative, segments, concentration,
     decisions: all,
     counts: {
       actionable: all.filter((d) => !['hold', 'watch'].includes(d.action)).length,
