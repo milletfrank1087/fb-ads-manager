@@ -180,8 +180,46 @@
               </template>
               <div x-show="!posts.length" class="text-[11px] text-meta-gray-500 px-2 py-3 whitespace-nowrap">No posts — tap <b class="text-meta-blue">Sync all</b>.</div>
             </div>
-            <!-- REVIEW digest + controls -->
-            <div x-show="tab==='review'" class="bg-white border-b border-gray-200 px-4 py-2 flex-shrink-0">
+            <!-- REVIEW digest + controls — MOBILE (compact, phones only) -->
+            <div x-show="tab==='review'" class="md:hidden bg-white border-b border-gray-200 flex-shrink-0">
+              <div class="flex items-center justify-between gap-2 px-3 pt-2">
+                <span class="text-xs font-bold text-meta-gray-900">Review queue</span>
+                <span class="text-[10px] text-meta-gray-500 whitespace-nowrap" x-text="(nowTick, lastSyncedAt ? ('synced ' + timeAgo(lastSyncedAt)) : 'never synced')"></span>
+              </div>
+              <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar px-3 pt-1.5 pb-1 text-xs cm-chips">
+                <span class="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap"><b x-text="newSinceLastSync"></b> new</span>
+                <span class="px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200 whitespace-nowrap"><b x-text="summary.suggest_delete||0"></b> suggest del</span>
+                <span class="px-2 py-0.5 rounded-full bg-orange-50 text-orange-700 border border-orange-200 whitespace-nowrap"><b x-text="summary.sev_high||0"></b> high sev</span>
+                <span class="px-2 py-0.5 rounded-full bg-yellow-50 text-yellow-700 border border-yellow-200 whitespace-nowrap"><b x-text="summary.flagged||0"></b> flagged</span>
+                <span class="px-2 py-0.5 rounded-full bg-gray-50 text-meta-gray-600 border border-gray-200 whitespace-nowrap"><b x-text="summary.hidden||0"></b> hidden</span>
+              </div>
+              <div class="flex items-center gap-2 px-3 pt-1">
+                <select x-model="reviewWindow" @change="offset=0; clearSelection(); reload()" class="flex-1 min-w-0 text-xs border border-gray-300 rounded-md px-2 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-meta-blue">
+                  <option value="all">All time</option>
+                  <option value="sync">Since last sync</option>
+                  <option value="1h">Last hour</option>
+                  <option value="24h">Last 24 hours</option>
+                  <option value="7d">Last 7 days</option>
+                  <option value="30d">Last 30 days</option>
+                </select>
+                <select x-model="sort" @change="reload()" class="flex-1 min-w-0 text-xs border border-gray-300 rounded-md px-2 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-meta-blue">
+                  <option value="severity_desc">Severity ↓</option>
+                  <option value="newest">Newest</option>
+                  <option value="likes_desc">Most liked</option>
+                </select>
+              </div>
+              <div class="flex items-center gap-2 px-3 py-2">
+                <button type="button" @click="reviewFlaggedOnly = !reviewFlaggedOnly; applyReviewControls()"
+                        class="px-3 py-1.5 text-xs rounded-full border font-medium whitespace-nowrap"
+                        :class="reviewFlaggedOnly ? 'bg-meta-blue text-white border-meta-blue' : 'bg-white text-meta-gray-700 border-gray-300'">Flagged only</button>
+                <span class="text-xs text-meta-gray-600 flex-1 truncate" x-text="total + (reviewFlaggedOnly ? ' to review' : ' comments')"></span>
+                <button @click="selectAllVisible()" :disabled="!rows.length" class="px-2.5 py-1.5 text-xs border border-gray-300 rounded-md disabled:opacity-40 whitespace-nowrap">Select all</button>
+                <button @click="reload()" :disabled="busy.inbox" class="px-2.5 py-1.5 text-xs border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50">↻</button>
+              </div>
+            </div>
+
+            <!-- REVIEW digest + controls — DESKTOP -->
+            <div x-show="tab==='review'" class="hidden md:block bg-white border-b border-gray-200 px-4 py-2 flex-shrink-0">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-xs font-semibold text-meta-gray-900">Review queue</span>
                 <span class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700 border border-blue-200"><b x-text="newSinceLastSync"></b> new since sync</span>
@@ -291,15 +329,15 @@
             </div>
 
             <!-- comment list -->
-            <div class="flex-1 overflow-y-auto scrollbar-thin px-4 py-3 space-y-2.5">
+            <div class="flex-1 overflow-y-auto scrollbar-thin px-3 md:px-4 py-2.5 md:py-3 space-y-2.5">
               <div x-show="busy.inbox && !rows.length" class="text-center text-sm text-meta-gray-600 py-12">Loading…</div>
               <div x-show="!busy.inbox && !rows.length" class="text-center text-sm text-meta-gray-600 py-12">No comments match this filter.</div>
 
               <template x-for="cm in rows" :key="cm.id">
-                <div class="bg-white border rounded-lg p-3"
+                <div class="bg-white border rounded-lg p-2.5 md:p-3"
                      :class="cm.is_hidden ? 'border-gray-200 bg-gray-50 opacity-90' : (cm.ai_recommended_action==='delete' ? 'border-red-200' : 'border-gray-200')">
-                  <div class="flex gap-3">
-                    <input type="checkbox" :checked="isSelected(cm.id)" @change="toggleSelect(cm.id)" class="mt-1 rounded text-meta-blue flex-shrink-0">
+                  <div class="flex gap-2 md:gap-3">
+                    <input type="checkbox" :checked="isSelected(cm.id)" @change="toggleSelect(cm.id)" class="mt-1 w-5 h-5 rounded text-meta-blue flex-shrink-0">
                     <img x-show="cm.from_picture_url" :src="cm.from_picture_url" class="w-8 h-8 rounded-full bg-gray-100 flex-shrink-0" referrerpolicy="no-referrer" @error="$el.style.display='none'">
                     <div x-show="!cm.from_picture_url" class="w-8 h-8 rounded-full bg-gray-200 flex-shrink-0 flex items-center justify-center text-[11px] text-meta-gray-600" x-text="(cm.from_name||'?').slice(0,1)"></div>
 
