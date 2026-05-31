@@ -27,7 +27,8 @@
     </script>
     <style>
       [x-cloak] { display: none !important; }
-      body { zoom: 0.9; }
+      /* Desktop uses a slight zoom-out to fit the dense dashboard; phones render at 100% so tap targets stay usable. */
+      @media (min-width: 768px) { body { zoom: 0.9; } }
       .text-num { font-variant-numeric: tabular-nums; }
       .scrollbar-thin::-webkit-scrollbar { height: 8px; width: 8px; }
       .scrollbar-thin::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
@@ -46,13 +47,55 @@
       .level-tab:hover:not(.active) { color: #1C1E21; background: #F5F6F7; }
       .drill-link { color: #1877F2; cursor: pointer; }
       .drill-link:hover { text-decoration: underline; }
+
+      /* ============================================================
+         MOBILE / PHONE LAYER  (max-width: 767px)
+         Layered overrides so the dense desktop dashboard is fully
+         usable one-handed on a phone. Uses !important only where a
+         Tailwind utility would otherwise win on equal specificity.
+         ============================================================ */
+      @media (max-width: 767px) {
+        /* Tighter gutters: every desktop px-6 / px-5 becomes a phone-friendly 0.75rem */
+        .px-6 { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+        .px-5 { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+        .py-4 { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
+        /* Drawer/card bodies that use uniform padding get tightened horizontally on phones */
+        .p-5 { padding: 0.75rem !important; }
+        .p-4 { padding: 0.85rem !important; }
+
+        /* Data tables: denser cells + momentum scrolling so wide tables swipe smoothly */
+        .overflow-x-auto, .overflow-y-auto { -webkit-overflow-scrolling: touch; }
+        table th, table td { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
+        /* Slimmer frozen name column (inline min-width:220px) so more metrics show; toggle stays 60px to match inline left:60px */
+        th.sticky-col, td.sticky-col { min-width: 160px !important; }
+        th.sticky-col-toggle, td.sticky-col-toggle { width: 60px !important; min-width: 60px !important; }
+        /* Name/ID truncation cap shouldn't exceed the slimmer column */
+        td.sticky-col .max-w-xs { max-width: 150px !important; }
+
+        /* Prevent iOS Safari from auto-zooming when a field is focused (needs >=16px) */
+        input:not([type=checkbox]):not([type=radio]), select, textarea { font-size: 16px !important; }
+
+        /* Popovers / dropdown menus must never exceed the viewport width */
+        .w-96, .w-80, .w-72, .w-64 { max-width: calc(100vw - 1.5rem) !important; }
+
+        /* Comfortable minimum tap target for icon buttons & toggles */
+        button, [role="button"], a.drill-link, label { touch-action: manipulation; }
+
+        /* The header button cluster wraps instead of overflowing */
+        header .px-6 { row-gap: 0.5rem; }
+
+        /* Secondary tables that aren't in a scroll wrapper become self-scrolling on phones
+           (standard responsive-table pattern). The main dashboard table is excluded — it
+           manages its own sticky columns inside an overflow-x-auto wrapper. */
+        table.mtable { display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; max-width: 100%; }
+      }
     </style>
   </head>
   <body class="bg-meta-gray-50 text-meta-gray-900 font-sans antialiased">
     <div x-data="dashboard()" x-init="init()" x-cloak class="min-h-screen flex flex-col">
       <!-- TOP NAV -->
       <header class="bg-white border-b border-gray-200 sticky top-0 z-30">
-        <div class="px-6 py-3 flex items-center gap-4">
+        <div class="px-6 py-3 flex items-center flex-wrap gap-2 md:gap-4">
           <div class="flex items-center gap-3">
             <div class="w-9 h-9 rounded-lg bg-meta-blue text-white flex items-center justify-center font-bold text-lg">G</div>
             <div>
@@ -65,8 +108,8 @@
             <span>·</span>
             <span x-text="account?.timezone_name || meta.timezone || ''"></span>
           </div>
-          <div class="flex-1"></div>
-          <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0"></div>
+          <div class="flex items-center flex-wrap justify-end gap-1.5 md:gap-2">
             <button @click="openStrategy()"
                     title="Open the Strategy advisor — analyzes your last 30/90 days (learning-phase health, best days/hours/placements, creative fatigue, scaling readiness) and proposes a ranked, suggest-only action plan plus an AI weekly summary. It never changes anything."
                     class="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-md hover:bg-indigo-700 flex items-center gap-1.5">
@@ -399,7 +442,7 @@
       </div>
 
       <!-- Toast -->
-      <div x-show="toast.show" x-transition class="fixed top-20 right-6 z-50 max-w-md">
+      <div x-show="toast.show" x-transition class="fixed top-16 md:top-20 left-3 right-3 md:left-auto md:right-6 z-50 md:max-w-md">
         <div class="rounded-lg shadow-lg border p-4 text-sm flex items-start gap-3"
              :class="toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-900' : toast.type === 'warn' ? 'bg-yellow-50 border-yellow-200 text-yellow-900' : 'bg-blue-50 border-blue-200 text-blue-900'">
           <div class="flex-1">
@@ -600,7 +643,7 @@
             <span class="text-xs text-meta-gray-600 font-normal" x-text="'(' + (usageSamples?.length || 0) + ' samples)'"></span>
           </summary>
           <div class="border-t border-gray-200 px-4 py-3 max-h-96 overflow-y-auto scrollbar-thin">
-            <table class="w-full text-xs">
+            <table class="w-full text-xs mtable">
               <thead>
                 <tr class="text-meta-gray-600">
                   <th class="text-left py-1">When</th>
@@ -693,7 +736,8 @@
               <div x-show="tools.breakdowns.loading" class="text-sm text-meta-gray-600 py-8 text-center">Loading breakdown…</div>
               <div x-show="tools.breakdowns.error" class="text-sm text-red-600 py-4" x-text="tools.breakdowns.error"></div>
               <div x-show="!tools.breakdowns.loading && !tools.breakdowns.error && tools.breakdowns.rows.length === 0" class="text-sm text-meta-gray-600 py-8 text-center">No data for this breakdown / range.</div>
-              <table x-show="!tools.breakdowns.loading && tools.breakdowns.rows.length" class="w-full text-xs">
+              <div class="overflow-x-auto scrollbar-thin">
+              <table x-show="!tools.breakdowns.loading && tools.breakdowns.rows.length" class="w-full text-xs min-w-[480px]">
                 <thead class="text-meta-gray-600 border-b border-gray-200">
                   <tr>
                     <template x-for="d in tools.breakdowns.dims" :key="d">
@@ -739,6 +783,7 @@
                   </tr>
                 </tfoot>
               </table>
+              </div>
             </div>
 
             <!-- CHANGE HISTORY -->
@@ -795,7 +840,7 @@
         <div class="absolute inset-0 bg-black/40" @click="closeStrategy()"></div>
         <div class="absolute inset-y-0 right-0 w-full max-w-5xl bg-meta-gray-50 shadow-2xl flex flex-col">
           <!-- header -->
-          <div class="px-5 py-3 bg-white border-b border-gray-200 flex items-center gap-3 flex-shrink-0">
+          <div class="px-5 py-3 bg-white border-b border-gray-200 flex items-center flex-wrap gap-y-2 gap-3 flex-shrink-0">
             <div class="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
             </div>
@@ -1777,7 +1822,7 @@
 
       <!-- TOP BAR -->
       <header class="bg-white border-b border-gray-200 flex-shrink-0">
-        <div class="px-5 py-2.5 flex items-center gap-3">
+        <div class="px-5 py-2.5 flex items-center flex-wrap gap-y-2 gap-3">
           <div class="flex items-center gap-2">
             <div class="w-8 h-8 rounded-lg bg-meta-blue text-white flex items-center justify-center">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
@@ -1863,7 +1908,7 @@
       </div>
 
       <!-- CM toast -->
-      <div x-show="toast.show" x-transition class="fixed top-4 right-5 z-[70] max-w-md">
+      <div x-show="toast.show" x-transition class="fixed top-3 left-3 right-3 md:left-auto md:right-5 z-[70] md:max-w-md">
         <div class="rounded-lg shadow-lg border p-3 text-sm flex items-start gap-3"
              :class="toast.type==='error'?'bg-red-50 border-red-200 text-red-900':toast.type==='warn'?'bg-yellow-50 border-yellow-200 text-yellow-900':'bg-blue-50 border-blue-200 text-blue-900'">
           <div class="flex-1">
@@ -1875,10 +1920,10 @@
       </div>
 
       <!-- ===================== BODY ===================== -->
-      <div class="flex-1 flex overflow-hidden">
+      <div class="flex-1 flex flex-col md:flex-row overflow-hidden">
 
-        <!-- LEFT RAIL: post catalog (inbox only) -->
-        <aside x-show="tab==='inbox'" class="w-72 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col overflow-hidden">
+        <!-- LEFT RAIL: post catalog (inbox only). On phones this collapses to a short, full-width strip above the list. -->
+        <aside x-show="tab==='inbox'" class="w-full md:w-72 flex-shrink-0 bg-white border-b md:border-b-0 md:border-r border-gray-200 flex flex-col overflow-hidden max-h-44 md:max-h-none">
           <div class="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
             <span class="text-xs font-semibold uppercase tracking-wider text-meta-gray-600">Posts</span>
             <span class="text-[11px] text-meta-gray-600" x-text="posts.length + ' posts'"></span>
@@ -2024,7 +2069,7 @@
             </div>
 
             <!-- bulk action bar -->
-            <div x-show="selected.length" x-transition class="bg-meta-gray-900 text-white px-4 py-2 flex items-center gap-2 flex-shrink-0">
+            <div x-show="selected.length" x-transition class="bg-meta-gray-900 text-white px-4 py-2 flex items-center flex-wrap gap-y-2 gap-2 flex-shrink-0">
               <span class="text-xs font-semibold" x-text="selected.length + ' selected'"></span>
               <button @click="selectAllVisible()" class="text-xs underline opacity-80 hover:opacity-100">Select all on page</button>
               <button @click="clearSelection()" class="text-xs underline opacity-80 hover:opacity-100">Clear</button>
@@ -2122,7 +2167,7 @@
                       </div>
 
                       <!-- actions -->
-                      <div class="mt-2 flex items-center gap-3 text-xs">
+                      <div class="mt-2 flex items-center flex-wrap gap-y-1.5 gap-3 text-xs">
                         <a x-show="cm.permalink_url" :href="cm.permalink_url" target="_blank" class="text-meta-blue hover:underline">View ↗</a>
                         <template x-if="moderationEnabled">
                           <span class="flex items-center gap-3">
@@ -2198,7 +2243,7 @@
               </div>
 
               <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                <table class="w-full text-sm">
+                <table class="w-full text-sm mtable">
                   <thead class="bg-meta-gray-50 text-meta-gray-600 text-xs uppercase">
                     <tr><th class="text-left px-3 py-2">Rule</th><th class="text-left px-3 py-2">Pattern</th><th class="text-left px-3 py-2">Match</th><th class="text-right px-3 py-2">Hits</th><th class="text-center px-3 py-2">On</th><th class="px-3 py-2"></th></tr>
                   </thead>
@@ -2227,7 +2272,7 @@
                 <span class="text-sm font-bold">Moderation audit log</span>
                 <button @click="loadAudit()" class="text-xs text-meta-blue hover:underline">Refresh</button>
               </div>
-              <table class="w-full text-xs">
+              <table class="w-full text-xs mtable">
                 <thead class="bg-meta-gray-50 text-meta-gray-600 uppercase">
                   <tr><th class="text-left px-3 py-2">When</th><th class="text-left px-3 py-2">Action</th><th class="text-left px-3 py-2">Comment</th><th class="text-left px-3 py-2">Result</th></tr>
                 </thead>
@@ -2253,7 +2298,7 @@
                 <span class="text-sm font-bold">Blocked users</span>
                 <button @click="loadBlocked()" class="text-xs text-meta-blue hover:underline">Refresh</button>
               </div>
-              <table class="w-full text-xs">
+              <table class="w-full text-xs mtable">
                 <thead class="bg-meta-gray-50 text-meta-gray-600 uppercase">
                   <tr><th class="text-left px-3 py-2">User</th><th class="text-left px-3 py-2">PSID</th><th class="text-left px-3 py-2">Reason</th><th class="text-left px-3 py-2">Blocked</th><th class="text-left px-3 py-2">Status</th><th class="px-3 py-2"></th></tr>
                 </thead>

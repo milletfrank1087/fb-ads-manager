@@ -1,4 +1,5 @@
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { config } from './lib/env.js';
@@ -38,6 +39,44 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json({ limit: '64kb' }));
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
+
+// --- Health probe (no auth) so platform health checks always pass ---------
+app.get('/healthz', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+
+// --- HTTP Basic Auth gate -------------------------------------------------
+// This app reads confidential ad-account data and — when armed — can pause/resume
+// campaigns, edit live budgets, moderate comments and spend AI credits. On a public
+// URL it MUST require a password. Auth is enforced whenever APP_PASSWORD is set;
+// it is only left open for local development (a loud warning is logged in that case).
+const AUTH_USER = (process.env.APP_USERNAME || 'admin').trim();
+const AUTH_PASS = (process.env.APP_PASSWORD || '').trim();
+function timingSafeEq(a, b) {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+if (AUTH_PASS) {
+  app.use((req, res, next) => {
+    const m = /^Basic\s+(.+)$/i.exec(req.headers.authorization || '');
+    if (m) {
+      const decoded = Buffer.from(m[1], 'base64').toString('utf8');
+      const idx = decoded.indexOf(':');
+      const u = decoded.slice(0, idx);
+      const p = decoded.slice(idx + 1);
+      if (timingSafeEq(u, AUTH_USER) && timingSafeEq(p, AUTH_PASS)) return next();
+    }
+    res.set('WWW-Authenticate', 'Basic realm="fb-ads-manager", charset="UTF-8"');
+    return res.status(401).send('Authentication required.');
+  });
+  log.info('auth', { enabled: true, mode: 'basic', user: AUTH_USER });
+} else {
+  log.warn('auth', {
+    enabled: false,
+    note: 'APP_PASSWORD not set — server is UNAUTHENTICATED. Set APP_PASSWORD before exposing it publicly (e.g. on Railway).',
+  });
+}
 
 app.use((req, res, next) => {
   const t0 = Date.now();
