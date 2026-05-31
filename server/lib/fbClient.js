@@ -214,9 +214,20 @@ async function rawRequest(method, relativePath, { params, data, endpointKey, saf
     return { ok: false, apiError: true, error: e, httpStatus: response.status, body };
   }
   if (response.status < 200 || response.status >= 300) {
+    let rawBody = '';
+    if (typeof body === 'string') rawBody = body;
+    else if (body != null) { try { rawBody = JSON.stringify(body); } catch { rawBody = String(body); } }
+    const snippet = rawBody.slice(0, 300);
+    // A non-2xx with an EMPTY body is the signature of a rejection at Meta's edge / anti-abuse
+    // layer: it never reached the Graph application layer, which always returns a JSON
+    // {error:{...}} envelope (that path is handled above as fb.api_error). Surface a usable
+    // message so the audit log + UI don't just show "unknown_error".
+    const message = snippet
+      ? `Meta returned HTTP ${response.status}: ${snippet}`
+      : `Meta returned HTTP ${response.status} with an empty body — rejected at Meta's edge (anti-abuse / IP reputation / app-tier write restriction), not a Graph business error. Reads from the same token/IP still succeed.`;
     safety.recordError(ep, { httpStatus: response.status, message: `HTTP ${response.status}` });
-    log.error('fb.http_error', { endpoint: ep, status: response.status, elapsedMs });
-    return { ok: false, httpStatus: response.status, body };
+    log.error('fb.http_error', { endpoint: ep, status: response.status, elapsedMs, bodySnippet: snippet || '(empty)' });
+    return { ok: false, httpStatus: response.status, status: response.status, body, error: { httpStatus: response.status, message }, message };
   }
 
   safety.recordSuccess(ep);

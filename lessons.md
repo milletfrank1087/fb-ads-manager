@@ -11,6 +11,22 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-06-01 Empty-body 403 on ad writes (edge rejection, not perms) + error-capture fix
+
+First live advisor write in production (set_budget on ad set `120243920433560464`, $150→$500/day) failed. Diagnosed end-to-end:
+
+- **The new editable-approval feature worked correctly.** Logs show `ad.budget.attempt from=15000 to=50000` — the operator-edited `$500` was correctly converted to `50000` minor units. Not a unit bug, not a UI bug.
+- **All local gates passed** (`blocked=false`): readonly bypass via MANAGE, `FB_ALLOW_ADVISOR_WRITES=true`, `FB_ALLOW_AD_MANAGEMENT=true`, the 4/hr budget rate guard, and the sacred guard.
+- **Meta returned `{"httpStatus":403,"body":""}` — a 403 with a ZERO-LENGTH body.** Pulled from `ad_actions.response_json` via the authenticated `/api/ads/audit` endpoint (Basic auth, creds from Railway vars).
+- **Code-path tell:** it hit `fbClient.js` `fb.http_error` (status non-2xx, no `body.error`) NOT `fb.api_error`. Graph *business* errors (permission/CBO/budget-too-low) ALWAYS return a JSON `{error:{...}}` envelope → `fb.api_error`. An empty body means the request was killed at Meta's **edge / anti-abuse layer** before the Graph app saw it.
+- **Proxy is NOT the discriminator.** The proxy uses HTTPS CONNECT tunnelling, so it cannot see GET-vs-POST or the body (opaque TLS). Reads (GET) succeed and writes (POST) empty-403 through the *same* proxy IP + token ⇒ the discrimination is at Meta's edge, which terminates TLS and sees "POST write to an ad set".
+- **Ruled OUT permission/account theories** with a new read-only probe `GET /api/ads/capability` (`adManager.getAccountCapability`, fields `account_status,disable_reason,user_tasks`): account = **ACTIVE / disable_reason NONE**, token tasks = **`[DRAFT,ANALYZE,ADVERTISE,MANAGE]`** (`canWrite:true`). So the token genuinely has write authority on a healthy account.
+- **Remaining suspect:** the app's Marketing API access tier is `development_access` (seen on `x-fb-ads-insights-throttle.ads_api_access_tier`). Strong candidate = **app-level write restriction at the edge** (user has the account role, but the APP isn't on Standard/Advanced access for `ads_management`) and/or egress-IP anti-abuse. Decisive next test: a reversible status pause→resume — same empty-403 ⇒ systemic (tier/IP); success ⇒ the budget 403 was transient.
+
+Consequences:
+- **`fbClient.js` non-2xx path now captures the body** (`bodySnippet` in the log) and returns a real `error.message` (special-casing the empty-body case as an edge/anti-abuse/app-tier rejection), so the audit log + UI stop showing `unknown_error`.
+- **Added `GET /api/ads/capability`** — read-only (safe under `FB_READONLY`), decodes `account_status`/`disable_reason` enums and reports `userTasks`/`canWrite`/`healthy`. The fast disambiguator for any future write 403.
+
 ## 2026-05-29 AI brain v2 — community playbook + enriched signals + scale-up gate
 
 Sprint to make the advisor "better than SOTA": feed it the best community (non-Meta) strategy and richer data, while keeping the confidence discipline.

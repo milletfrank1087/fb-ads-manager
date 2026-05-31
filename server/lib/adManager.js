@@ -165,6 +165,53 @@ export async function setBudget({ level, id, dailyBudget, lifetimeBudget }) {
   return { ok: true, level, id, kind, value: Number(afterValue), previousValue: beforeValue };
 }
 
+// ---------- READ: account write-capability diagnostic ----------
+
+// Meta numeric enums (account_status / disable_reason) decoded to labels for the operator.
+const ACCOUNT_STATUS_LABELS = {
+  1: 'ACTIVE', 2: 'DISABLED', 3: 'UNSETTLED', 7: 'PENDING_RISK_REVIEW',
+  8: 'PENDING_SETTLEMENT', 9: 'IN_GRACE_PERIOD', 100: 'PENDING_CLOSURE',
+  101: 'CLOSED', 201: 'ANY_ACTIVE', 202: 'ANY_CLOSED',
+};
+const DISABLE_REASON_LABELS = {
+  0: 'NONE', 1: 'ADS_INTEGRITY_POLICY', 2: 'ADS_IP_REVIEW', 3: 'RISK_PAYMENT',
+  4: 'GRAY_ACCOUNT_SHUT_DOWN', 5: 'ADS_AFC_REVIEW', 6: 'BUSINESS_INTEGRITY_RAR',
+  7: 'PERMANENT_CLOSE', 8: 'UNUSED_RESELLER_ACCOUNT', 9: 'UNUSED_ACCOUNT',
+};
+
+// Pure read (GET — allowed even in FB_READONLY). Answers "can this token actually write to this
+// account, and is the account healthy?" — the decisive disambiguation for an edge 403 on writes:
+// a missing MANAGE/ADVERTISE task or a non-ACTIVE/disabled account explains write rejections;
+// if tasks include MANAGE/ADVERTISE AND the account is ACTIVE/NONE, the 403 points to app-tier /
+// edge anti-abuse instead.
+export async function getAccountCapability() {
+  const acct = config.primaryAccountId;
+  const res = await fb.get(`/${acct}`, {
+    fields: 'id,name,account_status,disable_reason,user_tasks,currency,timezone_name',
+  }, 'GET:/account/capability');
+  if (!res.ok) return { ok: false, ...res, message: errorMessageOf(res) };
+
+  const b = res.body || {};
+  const tasks = Array.isArray(b.user_tasks) ? b.user_tasks : [];
+  const canWrite = tasks.includes('MANAGE') || tasks.includes('ADVERTISE');
+  const status = Number(b.account_status);
+  const disable = Number(b.disable_reason);
+  return {
+    ok: true,
+    accountId: b.id || acct,
+    name: b.name ?? null,
+    accountStatus: status,
+    accountStatusLabel: ACCOUNT_STATUS_LABELS[status] || `UNKNOWN(${b.account_status})`,
+    disableReason: disable,
+    disableReasonLabel: DISABLE_REASON_LABELS[disable] ?? `UNKNOWN(${b.disable_reason})`,
+    userTasks: tasks,
+    canWrite,
+    currency: b.currency ?? null,
+    timezone: b.timezone_name ?? null,
+    healthy: status === 1 && disable === 0 && canWrite,
+  };
+}
+
 // ---------- READ intelligence (no writes — safe on live campaigns) ----------
 
 // Whitelisted breakdown presets. Restricting to valid combinations avoids the malformed-call

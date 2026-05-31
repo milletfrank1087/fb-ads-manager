@@ -31,6 +31,7 @@ import {
   getAdPreview as adGetPreview,
   getActivities as adGetActivities,
   duplicate as adDuplicate,
+  getAccountCapability as adGetCapability,
   adMgmtState,
 } from './lib/adManager.js';
 
@@ -243,6 +244,13 @@ app.get('/api/ads/audit', (req, res) => {
   const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100));
   res.json({ ok: true, actions: store.getAdActions(limit) });
 });
+
+// Read-only diagnostic: does the token actually have write tasks on the account, and is the
+// account healthy? Used to disambiguate an edge 403 on writes from a permission/account issue.
+app.get('/api/ads/capability', ah(async (_req, res) => {
+  const result = await adGetCapability();
+  res.status(result.ok ? 200 : 502).json(result);
+}));
 
 app.post('/api/ads/:level/:id/status', ah(async (req, res) => {
   const { level, id } = req.params;
