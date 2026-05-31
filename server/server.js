@@ -1,5 +1,6 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { config } from './lib/env.js';
@@ -92,6 +93,33 @@ app.use((req, res, next) => {
   });
   next();
 });
+
+// --- index.html composition from partials ---------------------------------
+// index.html is split into self-contained partials (server/public/partials/*.html)
+// for separation of concerns. We expand <!--#include file="partials/x.html" -->
+// markers at request time (cheap: a few small local file reads), keeping a last-good
+// cache so a transient read error never serves a broken page.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+function buildIndexHtml() {
+  const raw = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  return raw.replace(/<!--#include\s+file="([^"]+)"\s*-->/g, (_m, rel) => {
+    const safeRel = path.normalize(rel).replace(/^([.][.][\\/])+/, '');
+    const full = path.join(PUBLIC_DIR, safeRel);
+    if (!full.startsWith(PUBLIC_DIR)) throw new Error(`include escapes public dir: ${rel}`);
+    return fs.readFileSync(full, 'utf8');
+  });
+}
+let indexHtmlCache = buildIndexHtml(); // fail fast at boot if partials are missing
+function serveIndex(_req, res) {
+  try {
+    indexHtmlCache = buildIndexHtml();
+  } catch (err) {
+    log.error('index.compose', { error: err.message, note: 'serving last-good cache' });
+  }
+  res.type('html').send(indexHtmlCache);
+}
+app.get('/', serveIndex);
+app.get('/index.html', serveIndex);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
