@@ -18,7 +18,7 @@
           </div>
 
           <!-- summary chips -->
-          <div class="flex items-center gap-1.5 ml-3 flex-wrap text-xs">
+          <div class="flex items-center gap-1.5 ml-0 md:ml-3 flex-nowrap md:flex-wrap overflow-x-auto no-scrollbar text-xs w-full md:w-auto cm-chips">
             <span class="px-2 py-0.5 rounded-full bg-gray-100 text-meta-gray-600"><b class="text-num" x-text="summary.total||0"></b> total</span>
             <span class="px-2 py-0.5 rounded-full bg-green-50 text-green-700"><b class="text-num" x-text="summary.visible||0"></b> visible</span>
             <span class="px-2 py-0.5 rounded-full bg-gray-100 text-meta-gray-600"><b class="text-num" x-text="summary.hidden||0"></b> hidden</span>
@@ -66,7 +66,7 @@
         </div>
 
         <!-- tabs -->
-        <div class="px-5 flex items-end gap-1 border-t border-gray-100">
+        <div class="px-5 flex items-end gap-1 border-t border-gray-100 overflow-x-auto no-scrollbar cm-tabs">
           <button @click="goInbox()" class="level-tab" :class="tab==='inbox'?'active':''"
                   title="Every comment across all your ad posts. Filter, search, reply, hide, delete or block.">Inbox</button>
           <button @click="goReview()" class="level-tab" :class="tab==='review'?'active':''"
@@ -107,12 +107,12 @@
       <div class="flex-1 flex flex-col md:flex-row overflow-hidden">
 
         <!-- LEFT RAIL: post catalog (inbox only). On phones this collapses to a short, full-width strip above the list. -->
-        <aside x-show="tab==='inbox'" class="w-full md:w-72 flex-shrink-0 bg-white border-b md:border-b-0 md:border-r border-gray-200 flex flex-col overflow-hidden max-h-44 md:max-h-none">
+        <aside x-show="tab==='inbox'" class="cm-rail hidden md:flex w-full md:w-72 flex-shrink-0 bg-white border-b md:border-b-0 md:border-r border-gray-200 md:flex-col overflow-hidden max-h-44 md:max-h-none">
           <div class="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
             <span class="text-xs font-semibold uppercase tracking-wider text-meta-gray-600">Posts</span>
             <span class="text-[11px] text-meta-gray-600" x-text="posts.length + ' posts'"></span>
           </div>
-          <div class="flex-1 overflow-y-auto scrollbar-thin">
+          <div class="flex-1 overflow-y-auto scrollbar-thin cm-posts-list">
             <button @click="selectPost(null)" class="w-full text-left px-3 py-2 border-b border-gray-50 hover:bg-gray-50 flex items-center gap-2"
                     :class="!selectedPostId ? 'bg-blue-50' : ''">
               <div class="w-9 h-9 rounded bg-gradient-to-br from-meta-blue to-blue-400 flex items-center justify-center text-white flex-shrink-0">
@@ -160,6 +160,26 @@
 
           <!-- ===== INBOX + REVIEW TABS (shared list) ===== -->
           <div x-show="tab==='inbox' || tab==='review'" class="flex-1 flex flex-col overflow-hidden">
+            <!-- MOBILE: horizontal post strip (inbox only) — replaces the desktop left rail on phones -->
+            <div x-show="tab==='inbox'" class="md:hidden flex-shrink-0 bg-white border-b border-gray-200 px-3 py-2 flex items-center gap-1 overflow-x-auto no-scrollbar">
+              <button @click="selectPost(null)" type="button" class="cm-poststrip-chip" :class="!selectedPostId ? 'cm-poststrip-on' : ''">
+                <span class="cm-poststrip-thumb bg-gradient-to-br from-meta-blue to-blue-400 text-white flex items-center justify-center">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                </span>
+                <span class="cm-poststrip-name">All</span>
+              </button>
+              <template x-for="p in posts" :key="'mpost-'+p.id">
+                <button @click="selectPost(p.id)" type="button" class="cm-poststrip-chip" :class="selectedPostId===p.id ? 'cm-poststrip-on' : ''">
+                  <span class="relative inline-flex">
+                    <img x-show="p.full_picture_url" :src="p.full_picture_url" class="cm-poststrip-thumb object-cover bg-gray-100" referrerpolicy="no-referrer" @error="$el.style.display='none'">
+                    <span x-show="!p.full_picture_url" class="cm-poststrip-thumb bg-gray-100 flex items-center justify-center text-[8px] text-meta-gray-500">no&nbsp;img</span>
+                    <span x-show="newCounts[p.id] > 0" class="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center" x-text="newCounts[p.id]"></span>
+                  </span>
+                  <span class="cm-poststrip-name" x-text="p.ad_name || 'Post'"></span>
+                </button>
+              </template>
+              <div x-show="!posts.length" class="text-[11px] text-meta-gray-500 px-2 py-3 whitespace-nowrap">No posts — tap <b class="text-meta-blue">Sync all</b>.</div>
+            </div>
             <!-- REVIEW digest + controls -->
             <div x-show="tab==='review'" class="bg-white border-b border-gray-200 px-4 py-2 flex-shrink-0">
               <div class="flex items-center gap-2 flex-wrap">
@@ -240,7 +260,7 @@
                 <span class="text-num w-4" x-text="minSev"></span>
               </label>
               <input type="text" x-model.debounce.400ms="q" @input="reload()" placeholder="Search text / author…"
-                     class="text-xs border border-gray-300 rounded-md px-2 py-1.5 flex-1 min-w-[140px] focus:outline-none focus:ring-1 focus:ring-meta-blue">
+                     class="text-xs border border-gray-300 rounded-md px-2 py-1.5 w-full order-last md:order-none md:w-auto md:flex-1 md:min-w-[140px] focus:outline-none focus:ring-1 focus:ring-meta-blue">
               <span class="text-xs text-meta-gray-600" x-text="total + ' result' + (total===1?'':'s')"></span>
               <button @click="reload()" :disabled="busy.inbox" class="px-2.5 py-1.5 text-xs border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50">↻</button>
             </div>
@@ -351,7 +371,7 @@
                       </div>
 
                       <!-- actions -->
-                      <div class="mt-2 flex items-center flex-wrap gap-y-1.5 gap-3 text-xs">
+                      <div class="mt-2 flex items-center flex-wrap gap-y-1.5 gap-3 text-xs cm-actions">
                         <a x-show="cm.permalink_url" :href="cm.permalink_url" target="_blank" class="text-meta-blue hover:underline">View ↗</a>
                         <template x-if="moderationEnabled">
                           <span class="flex items-center gap-3">
@@ -426,7 +446,31 @@
                 </template>
               </div>
 
-              <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+              <!-- MOBILE: rules as cards (phones only) -->
+              <div class="md:hidden space-y-2">
+                <template x-for="r in rules" :key="'mrule-'+r.id">
+                  <div class="bg-white border border-gray-200 rounded-lg p-3">
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0 flex-1">
+                        <div class="font-semibold text-sm" x-text="r.name"></div>
+                        <div class="font-mono text-[11px] text-meta-gray-600 break-all mt-0.5" x-text="r.match_type==='has_url' ? '(any URL)' : r.pattern"></div>
+                      </div>
+                      <label class="flex flex-col items-center gap-0.5 flex-shrink-0 text-[10px] text-meta-gray-500">
+                        <input type="checkbox" :checked="r.is_enabled" @change="toggleRule(r)" class="rounded text-meta-blue w-5 h-5">On
+                      </label>
+                    </div>
+                    <div class="mt-2 flex items-center gap-2 text-xs">
+                      <span class="px-2 py-0.5 rounded bg-gray-100 text-meta-gray-700" x-text="r.match_type"></span>
+                      <span class="text-meta-gray-600"><b class="text-num" x-text="r.hit_count"></b> hits</span>
+                      <span class="flex-1"></span>
+                      <button @click="deleteRule(r)" class="text-red-600 font-medium px-2 py-1.5">Delete</button>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="!rules.length" class="text-center text-sm text-meta-gray-600 py-6 bg-white rounded-lg border border-gray-200">No rules yet.</div>
+              </div>
+
+              <div class="bg-white border border-gray-200 rounded-lg overflow-hidden hidden md:block">
                 <table class="w-full text-sm mtable">
                   <thead class="bg-meta-gray-50 text-meta-gray-600 text-xs uppercase">
                     <tr><th class="text-left px-3 py-2">Rule</th><th class="text-left px-3 py-2">Pattern</th><th class="text-left px-3 py-2">Match</th><th class="text-right px-3 py-2">Hits</th><th class="text-center px-3 py-2">On</th><th class="px-3 py-2"></th></tr>
@@ -456,7 +500,22 @@
                 <span class="text-sm font-bold">Moderation audit log</span>
                 <button @click="loadAudit()" class="text-xs text-meta-blue hover:underline">Refresh</button>
               </div>
-              <table class="w-full text-xs mtable">
+              <!-- MOBILE: audit entries as cards -->
+              <div class="md:hidden divide-y divide-gray-100">
+                <template x-for="e in audit" :key="'maud-'+e.id">
+                  <div class="px-3 py-2.5">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-semibold text-sm" x-text="e.action"></span>
+                      <span class="text-[11px] flex-shrink-0" :class="e.success ? 'text-green-700' : 'text-red-700'" x-text="e.success ? 'ok' : (e.error_message||'failed')"></span>
+                    </div>
+                    <div class="text-xs text-meta-gray-700 mt-0.5 break-words"><span class="text-meta-gray-500" x-text="e.commenter_name ? e.commenter_name+': ' : ''"></span><span x-text="e.message_preview || e.comment_id"></span></div>
+                    <div class="text-[11px] text-meta-gray-500 mt-0.5" x-text="timeAgo(e.created_at)"></div>
+                  </div>
+                </template>
+                <div x-show="!audit.length" class="px-3 py-6 text-center text-meta-gray-600 text-sm">No moderation actions logged yet.</div>
+              </div>
+
+              <table class="w-full text-xs mtable hidden md:table">
                 <thead class="bg-meta-gray-50 text-meta-gray-600 uppercase">
                   <tr><th class="text-left px-3 py-2">When</th><th class="text-left px-3 py-2">Action</th><th class="text-left px-3 py-2">Comment</th><th class="text-left px-3 py-2">Result</th></tr>
                 </thead>
@@ -482,7 +541,25 @@
                 <span class="text-sm font-bold">Blocked users</span>
                 <button @click="loadBlocked()" class="text-xs text-meta-blue hover:underline">Refresh</button>
               </div>
-              <table class="w-full text-xs mtable">
+              <!-- MOBILE: blocked users as cards -->
+              <div class="md:hidden divide-y divide-gray-100">
+                <template x-for="b in blocked" :key="'mblk-'+b.psid">
+                  <div class="px-3 py-2.5" :class="b.unblocked_at ? 'opacity-50' : ''">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-semibold text-sm break-words" x-text="b.name || '—'"></span>
+                      <span class="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0" :class="b.unblocked_at ? 'bg-gray-100 text-meta-gray-600' : 'bg-red-50 text-red-700'" x-text="b.unblocked_at ? 'unblocked' : 'blocked'"></span>
+                    </div>
+                    <div class="text-[11px] font-mono text-meta-gray-500 break-all mt-0.5" x-text="b.psid"></div>
+                    <div class="text-xs text-meta-gray-600 mt-0.5"><span x-text="b.reason || '—'"></span> · <span x-text="timeAgo(b.blocked_at)"></span></div>
+                    <div x-show="!b.unblocked_at && moderationEnabled" class="mt-1.5">
+                      <button @click="unblock(b)" class="text-sm text-meta-blue font-medium px-2 py-1.5">Unblock</button>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="!blocked.length" class="px-3 py-6 text-center text-meta-gray-600 text-sm">No blocked users.</div>
+              </div>
+
+              <table class="w-full text-xs mtable hidden md:table">
                 <thead class="bg-meta-gray-50 text-meta-gray-600 uppercase">
                   <tr><th class="text-left px-3 py-2">User</th><th class="text-left px-3 py-2">PSID</th><th class="text-left px-3 py-2">Reason</th><th class="text-left px-3 py-2">Blocked</th><th class="text-left px-3 py-2">Status</th><th class="px-3 py-2"></th></tr>
                 </thead>

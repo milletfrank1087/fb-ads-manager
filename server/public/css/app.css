@@ -75,6 +75,24 @@ details summary::-webkit-details-marker { display: none; }
   .toolbar-row { gap: 0.5rem !important; }
   /* Drawer/overlay headers should never overflow — allow wrapping everywhere */
   .drawer-head { flex-wrap: wrap; row-gap: 0.4rem; }
+
+  /* ---- Comments Manager (full-screen overlay) phone density ---- */
+  /* Summary chips + tabs become horizontal swipe rows instead of wrapping into tall stacks */
+  .cm-chips > span { flex-shrink: 0; }
+  .cm-tabs { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+  .cm-tabs > button { flex-shrink: 0; white-space: nowrap; }
+  /* Comment row action buttons get a real tap target */
+  .cm-actions button, .cm-actions a { min-height: 36px; display: inline-flex; align-items: center; padding: 0 2px; }
+  /* The post rail is capped shorter on phones so the comment list is reachable without scrolling past it */
+  aside.cm-rail { max-height: 8.5rem !important; }
+
+  /* ---- Strategy / Tools drawers (full-screen on phones) ---- */
+  /* Tab rows swipe horizontally and never clip; each tab gets a real tap target */
+  .drawer-tabs > button { flex-shrink: 0; white-space: nowrap; min-height: 44px; }
+  /* Strategy day-window toggle buttons: comfortable thumb size */
+  .drawer-head .bg-gray-100 button { min-height: 34px; }
+  /* Right-side drawers already use w-full on phones; guarantee they fill the screen */
+  .drawer-head { width: 100%; }
 }
 
 /* ============================================================
@@ -113,3 +131,143 @@ details summary::-webkit-details-marker { display: none; }
 .mbn-item:disabled { opacity: 0.45; }
 .mbn-accent { color: #4f46e5; }
 .mbn-item svg { stroke-width: 2; }
+
+/* ============================================================
+   MOBILE DASHBOARD CARD LIST (phones only; the section is md:hidden)
+   Each campaign/ad-set/ad renders as a tap-friendly card instead of
+   a row in the horizontal-scroll table. Same data, same handlers.
+   ============================================================ */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+.msort-chip {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #F0F2F5;
+  color: #65676B;
+  white-space: nowrap;
+  line-height: 1;
+  min-height: 30px;
+  -webkit-tap-highlight-color: transparent;
+}
+.msort-chip.msort-on { background: #1877F2; color: #fff; }
+
+.mtotals {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 9px 11px;
+  margin-bottom: 10px;
+}
+.mtotals-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #65676B;
+  margin-bottom: 7px;
+}
+.mtotals-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.mtotals-cell { min-width: 0; }
+.mtotals-k { font-size: 10px; color: #8a8d91; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtotals-v {
+  font-size: 13px; font-weight: 800; color: #1c1e21;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.mrow-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-left-width: 3px;
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.mrow-card.mrow-on { border-left-color: #1877F2; }
+.mrow-card.mrow-off { border-left-color: #d1d5db; }
+
+.mmetric-k {
+  font-size: 9.5px; line-height: 1.2; color: #8a8d91;
+  text-transform: uppercase; letter-spacing: 0.02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mmetric-v {
+  font-size: 13.5px; font-weight: 700; color: #1c1e21; margin-top: 2px; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mmetric-v.tabular-nums { font-variant-numeric: tabular-nums; }
+
+.mrow-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 13px; font-weight: 600; color: #1877F2;
+  background: #EAF2FF; border-radius: 10px;
+  padding: 8px 12px; min-height: 40px;
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+.mrow-btn:active { background: #dbe9ff; }
+.mrow-btn:disabled { opacity: 0.5; }
+
+/* ============================================================
+   MOBILE BOTTOM SHEET (filters, columns, posts) — slides up from
+   the bottom, dims the page. Local Alpine state only (no app.js).
+   ============================================================ */
+.m-sheet-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(15, 23, 42, 0.45);
+}
+.m-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 61;
+  background: #fff;
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.18);
+  max-height: 85vh;
+  display: flex; flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.m-sheet-grip { width: 40px; height: 4px; border-radius: 999px; background: #d1d5db; margin: 9px auto 4px; }
+.m-sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 16px 10px; border-bottom: 1px solid #eef0f2;
+}
+.m-sheet-title { font-size: 16px; font-weight: 700; color: #1c1e21; }
+.m-sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px; }
+.m-sheet-section-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: #8a8d91; margin: 14px 0 8px;
+}
+.m-sheet-section-label:first-child { margin-top: 0; }
+
+/* Mobile-only "Filters" trigger button on the dashboard toolbar */
+.m-filter-trigger {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: #1c1e21;
+  background: #fff; border: 1px solid #d1d5db; border-radius: 10px;
+  padding: 9px 12px; min-height: 42px;
+}
+.m-filter-trigger:active { background: #f5f6f7; }
+.m-filter-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: #1877F2; color: #fff; font-size: 10px; font-weight: 700;
+}
+
+/* Comments Manager — mobile horizontal post strip (stories-style) */
+.cm-poststrip-chip {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: center;
+  gap: 3px; width: 60px; padding: 2px 1px;
+  -webkit-tap-highlight-color: transparent;
+}
+.cm-poststrip-thumb {
+  width: 48px; height: 48px; border-radius: 13px;
+  border: 2px solid transparent; flex-shrink: 0;
+}
+.cm-poststrip-chip.cm-poststrip-on .cm-poststrip-thumb { border-color: #1877F2; }
+.cm-poststrip-name {
+  font-size: 10px; line-height: 1.1; max-width: 58px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #65676B;
+}
+.cm-poststrip-chip.cm-poststrip-on .cm-poststrip-name { color: #1877F2; font-weight: 700; }

@@ -16,7 +16,7 @@
             </button>
           </div>
           <!-- Tabs -->
-          <div class="px-5 pt-3 flex items-center gap-1 border-b border-gray-200 flex-shrink-0">
+          <div class="px-5 pt-3 flex items-center gap-1 border-b border-gray-200 flex-shrink-0 overflow-x-auto no-scrollbar drawer-tabs">
             <button @click="setToolsTab('breakdowns')" class="px-3 py-2 text-xs font-semibold border-b-2 -mb-px"
                     :class="tools.tab === 'breakdowns' ? 'border-meta-blue text-meta-blue' : 'border-transparent text-meta-gray-600 hover:text-meta-gray-900'"
                     title="Performance broken down by audience and placement dimensions — find what's actually working.">Breakdowns</button>
@@ -57,7 +57,36 @@
               <div x-show="tools.breakdowns.loading" class="text-sm text-meta-gray-600 py-8 text-center">Loading breakdown…</div>
               <div x-show="tools.breakdowns.error" class="text-sm text-red-600 py-4" x-text="tools.breakdowns.error"></div>
               <div x-show="!tools.breakdowns.loading && !tools.breakdowns.error && tools.breakdowns.rows.length === 0" class="text-sm text-meta-gray-600 py-8 text-center">No data for this breakdown / range.</div>
-              <div class="overflow-x-auto scrollbar-thin">
+              <!-- MOBILE: breakdown rows as cards -->
+              <div class="md:hidden space-y-2" x-show="!tools.breakdowns.loading && tools.breakdowns.rows.length">
+                <template x-for="(r, i) in tools.breakdowns.rows" :key="'mbd-'+i">
+                  <div class="border border-gray-200 rounded-lg p-2.5">
+                    <div class="font-semibold text-sm capitalize mb-2 break-words">
+                      <template x-for="d in tools.breakdowns.dims" :key="'mbdd-'+i+'-'+d">
+                        <span class="mr-1.5" x-text="r[d]"></span>
+                      </template>
+                    </div>
+                    <div class="grid grid-cols-3 gap-x-2 gap-y-2">
+                      <div><div class="mmetric-k">Spend</div><div class="mmetric-v tabular-nums" x-text="formatMoney(r.spend)"></div></div>
+                      <div><div class="mmetric-k">Impr</div><div class="mmetric-v tabular-nums" x-text="r.impressions.toLocaleString()"></div></div>
+                      <div><div class="mmetric-k">CTR</div><div class="mmetric-v tabular-nums" x-text="r.ctr != null ? r.ctr.toFixed(2)+'%' : '—'"></div></div>
+                      <div><div class="mmetric-k">CPC</div><div class="mmetric-v tabular-nums" x-text="r.cpc != null ? formatMoney(r.cpc) : '—'"></div></div>
+                      <div><div class="mmetric-k">Purch</div><div class="mmetric-v tabular-nums" x-text="r.purchases || '—'"></div></div>
+                      <div><div class="mmetric-k">Value</div><div class="mmetric-v tabular-nums" x-text="r.purchase_value ? formatMoney(r.purchase_value) : '—'"></div></div>
+                      <div><div class="mmetric-k">ROAS</div><div class="mmetric-v tabular-nums" :class="r.roas == null ? 'text-meta-gray-400' : (r.roas >= 2 ? 'text-green-700' : (r.roas >= 1 ? 'text-amber-600' : 'text-red-600'))" x-text="r.roas != null ? r.roas.toFixed(2)+'x' : '—'"></div></div>
+                    </div>
+                  </div>
+                </template>
+                <div class="border-t-2 border-gray-300 pt-2 flex items-center justify-between text-[12px] font-semibold">
+                  <span>Total</span>
+                  <span class="flex items-center gap-3">
+                    <span class="tabular-nums" x-text="formatMoney(breakdownTotals().spend)"></span>
+                    <span class="tabular-nums" x-text="breakdownTotals().roas != null ? breakdownTotals().roas.toFixed(2)+'x' : '—'"></span>
+                  </span>
+                </div>
+              </div>
+
+              <div class="overflow-x-auto scrollbar-thin hidden md:block">
               <table x-show="!tools.breakdowns.loading && tools.breakdowns.rows.length" class="w-full text-xs min-w-[480px]">
                 <thead class="text-meta-gray-600 border-b border-gray-200">
                   <tr>

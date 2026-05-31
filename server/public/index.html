@@ -260,7 +260,7 @@
             <button @click="setFilterMode('active')" :class="filterMode === 'active' ? 'bg-white shadow-sm' : ''" class="px-3 py-1 text-xs font-medium rounded" title="Show only rows whose status is Active.">Active</button>
             <button @click="setFilterMode('delivered')" :class="filterMode === 'delivered' ? 'bg-white shadow-sm' : ''" class="px-3 py-1 text-xs font-medium rounded" title="Show only rows that had impressions in the selected date range.">Had delivery</button>
           </div>
-          <div class="relative">
+          <div class="relative hidden md:block">
             <button @click="presetsOpen = !presetsOpen; columnsOpen=false" title="Switch between saved column layouts (presets) or save your own." class="px-3 py-1.5 text-xs font-medium border border-gray-300 bg-white rounded-md hover:bg-gray-50 flex items-center gap-1">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5h14a2 2 0 012 2v2a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zm0 8h14a2 2 0 012 2v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2a2 2 0 012-2z"/></svg>
               <span x-text="activePresetLabel"></span>
@@ -292,7 +292,7 @@
               </div>
             </div>
           </div>
-          <div class="relative">
+          <div class="relative hidden md:block">
             <button @click="columnsOpen = !columnsOpen; presetsOpen=false" title="Choose which metric columns are visible in the table." class="px-3 py-1.5 text-xs font-medium border border-gray-300 bg-white rounded-md hover:bg-gray-50 flex items-center gap-1">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
               Columns
@@ -341,6 +341,104 @@
               <option value="maximum">Lifetime</option>
             </select>
           </div>
+          <!-- MOBILE: Filters & columns trigger + bottom sheet (phones only) -->
+          <div class="md:hidden" x-data="{ fopen: false }">
+            <button type="button" @click="fopen = true" class="m-filter-trigger" aria-label="Open filters and columns">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.879a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
+              <span>Filters</span>
+              <span class="m-filter-badge" x-text="visibleColumnCount"></span>
+            </button>
+
+            <div x-show="fopen" x-transition.opacity class="m-sheet-backdrop" @click="fopen = false" x-cloak></div>
+            <div x-show="fopen" x-cloak
+                 x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-y-full" x-transition:enter-end="translate-y-0"
+                 x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-y-0" x-transition:leave-end="translate-y-full"
+                 class="m-sheet">
+              <div class="m-sheet-grip"></div>
+              <div class="m-sheet-head">
+                <div class="m-sheet-title">Filters &amp; columns</div>
+                <button type="button" @click="fopen = false" class="text-meta-blue font-semibold text-sm px-2 py-1">Done</button>
+              </div>
+              <div class="m-sheet-body">
+                <!-- Date range -->
+                <div class="m-sheet-section-label">Date range</div>
+                <div class="grid grid-cols-3 gap-2">
+                  <template x-for="d in [
+                      {v:'today',l:'Today'},{v:'yesterday',l:'Yesterday'},{v:'last_7d',l:'7 days'},
+                      {v:'last_14d',l:'14 days'},{v:'last_28d',l:'28 days'},{v:'last_30d',l:'30 days'},
+                      {v:'this_month',l:'This month'},{v:'last_month',l:'Last month'},{v:'maximum',l:'Lifetime'}
+                    ]" :key="d.v">
+                    <button type="button" @click="datePreset = d.v; onDatePresetChange()"
+                            class="px-2 py-2.5 rounded-lg text-[13px] font-medium border"
+                            :class="datePreset === d.v ? 'bg-meta-blue text-white border-meta-blue' : 'bg-white text-meta-gray-700 border-gray-300'"
+                            x-text="d.l"></button>
+                  </template>
+                </div>
+
+                <!-- Presets -->
+                <div class="m-sheet-section-label">Saved layouts</div>
+                <div class="space-y-1">
+                  <template x-for="p in builtInPresets" :key="'mp-'+p.id">
+                    <button type="button" @click="applyPreset(p.id)" class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg border"
+                            :class="activePresetId === p.id ? 'border-meta-blue bg-blue-50' : 'border-gray-200 bg-white'">
+                      <span class="text-sm" x-text="p.name"></span>
+                      <span x-show="activePresetId === p.id" class="text-meta-blue">✓</span>
+                    </button>
+                  </template>
+                  <template x-for="p in customPresets" :key="'mpc-'+p.id">
+                    <div class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg border"
+                         :class="activePresetId === p.id ? 'border-meta-blue bg-blue-50' : 'border-gray-200 bg-white'">
+                      <button type="button" class="flex-1 text-left text-sm" @click="applyPreset(p.id)" x-text="p.name"></button>
+                      <button type="button" @click.stop="deletePreset(p.id)" class="text-xs text-red-600 ml-2">Delete</button>
+                    </div>
+                  </template>
+                  <button type="button" @click="saveCurrentAsPreset()" class="w-full text-left px-3 py-2.5 text-sm text-meta-blue font-medium">+ Save current columns as preset…</button>
+                </div>
+
+                <!-- Refresh + auto -->
+                <div class="m-sheet-section-label">Data</div>
+                <div class="flex items-center gap-2">
+                  <button type="button" @click="refreshLevelNow(); fopen=false" :disabled="loading || safety.killSwitch"
+                          class="flex-1 px-3 py-3 rounded-lg border border-gray-300 bg-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    <span x-text="'Refresh ' + levelNounPlural"></span>
+                  </button>
+                  <label class="flex items-center gap-2 px-3 py-3 rounded-lg border border-gray-300 bg-white text-sm font-medium">
+                    <input type="checkbox" x-model="autoRefreshOn" @change="saveAutoRefresh()" class="rounded text-meta-blue w-4 h-4">
+                    Auto
+                  </label>
+                </div>
+
+                <!-- Columns -->
+                <div class="flex items-center justify-between mt-5 mb-2">
+                  <div class="m-sheet-section-label" style="margin:0;">Columns (<span x-text="visibleColumnCount"></span>)</div>
+                  <div class="flex gap-3 text-xs">
+                    <button type="button" @click="resetColumnsToDefault()" class="text-meta-blue font-medium">Reset</button>
+                    <button type="button" @click="toggleAllColumns(true)" class="text-meta-blue font-medium">All</button>
+                    <button type="button" @click="toggleAllColumns(false)" class="text-meta-blue font-medium">None</button>
+                  </div>
+                </div>
+                <template x-for="group in columnGroups" :key="'mg-'+group.id">
+                  <div class="mb-3">
+                    <div class="flex items-center justify-between mb-1">
+                      <div class="text-xs font-bold text-meta-gray-900" x-text="group.label"></div>
+                      <button type="button" @click="toggleGroup(group.id)" class="text-[11px] text-meta-blue font-medium" x-text="isGroupAllOn(group.id) ? 'Hide all' : 'Show all'"></button>
+                    </div>
+                    <div class="grid grid-cols-1 gap-0.5">
+                      <template x-for="col in group.columns" :key="'mgc-'+col.id">
+                        <label class="flex items-center gap-2.5 py-2 px-1 rounded-lg active:bg-gray-50">
+                          <input type="checkbox" :checked="visibleColumns[col.id] !== false" @change="toggleColumn(col.id)" class="rounded text-meta-blue w-4 h-4">
+                          <span class="text-sm" x-text="col.label"></span>
+                          <span class="text-[11px] text-meta-gray-500 ml-auto font-mono" x-text="col.subtle || ''"></span>
+                        </label>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
           <div class="text-xs hidden md:block" :class="stalenessClass">
             <template x-if="lastInsightsFetchedAt">
               <span>Insights: <span class="font-medium" x-text="timeAgo(lastInsightsFetchedAt)"></span></span>
@@ -349,19 +447,19 @@
               <span class="italic">No data yet</span>
             </template>
           </div>
-          <label class="flex items-center gap-1 text-xs text-meta-gray-600 cursor-help"
+          <label class="hidden md:flex items-center gap-1 text-xs text-meta-gray-600 cursor-help"
                  title="Auto-refresh: when on, the current view is re-fetched roughly every 2 minutes if data is older than 10 minutes. Pauses automatically near rate limits or when the kill switch is on.">
             <input type="checkbox" x-model="autoRefreshOn" @change="saveAutoRefresh()" class="rounded text-meta-blue">
             Auto
           </label>
           <button @click="refreshLevelNow()" :disabled="loading || safety.killSwitch"
-                  class="px-3 py-1.5 bg-white border border-gray-300 text-meta-gray-900 text-xs font-medium rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  class="hidden md:flex px-3 py-1.5 bg-white border border-gray-300 text-meta-gray-900 text-xs font-medium rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed items-center gap-1.5"
                   :title="'Refresh ' + levelNounPlural + ' only (1 HTTP)'">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             <span x-text="loading && loadingScope === 'level' ? '…' : 'Level'"></span>
           </button>
           <button @click="refreshAllNow()" :disabled="loading || safety.killSwitch"
-                  class="px-4 py-1.5 bg-meta-blue text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  class="hidden md:flex px-4 py-1.5 bg-meta-blue text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed items-center gap-2"
                   title="Refresh campaigns + ad sets + ads (3 HTTP)">
             <svg x-show="!loading" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             <svg x-show="loading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
@@ -396,7 +494,8 @@
 
       <!-- TABLE -->
       <main class="flex-1 px-6 py-4">
-        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+        <!-- DESKTOP / TABLET: dense data table (hidden on phones, replaced by the card list below) -->
+        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm hidden md:block">
           <div class="overflow-x-auto scrollbar-thin">
             <table class="w-full text-sm">
               <thead class="bg-meta-gray-50 border-b border-gray-200">
@@ -576,6 +675,216 @@
             </table>
           </div>
         </div>
+
+        <!-- MOBILE: card list (phones only) — identical data, columns & handlers as the desktop table above -->
+        <section class="md:hidden" aria-label="Campaign list (mobile)">
+          <!-- count + sort bar -->
+          <div class="flex items-center justify-between gap-2 mb-1.5">
+            <div class="flex-shrink-0 text-[12px] leading-tight">
+              <span class="font-bold text-meta-gray-900" x-text="rows.length"></span>
+              <span class="text-meta-gray-500" x-text="' ' + levelNounPlural"></span>
+              <span class="text-green-700 font-medium" x-show="activeCount" x-text="' · ' + activeCount + ' on'"></span>
+            </div>
+          </div>
+          <div class="mb-2.5">
+            <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 py-0.5">
+              <span class="text-[11px] text-meta-gray-500 flex-shrink-0">Sort</span>
+              <button type="button" @click="sortBy('name')" class="msort-chip" :class="sortField==='name' ? 'msort-on' : ''">
+                Name <span x-text="sortIcon('name')"></span>
+              </button>
+              <button type="button" @click="sortBy('spend')" class="msort-chip" :class="sortField==='spend' ? 'msort-on' : ''">
+                Spend <span x-text="sortIcon('spend')"></span>
+              </button>
+              <button type="button" @click="sortBy('purchases_total')" class="msort-chip" :class="sortField==='purchases_total' ? 'msort-on' : ''">
+                Purch <span x-text="sortIcon('purchases_total')"></span>
+              </button>
+              <button type="button" @click="sortBy('purchase_roas_total')" class="msort-chip" :class="sortField==='purchase_roas_total' ? 'msort-on' : ''">
+                ROAS <span x-text="sortIcon('purchase_roas_total')"></span>
+              </button>
+              <button type="button" @click="sortBy('cpm')" class="msort-chip" :class="sortField==='cpm' ? 'msort-on' : ''">
+                CPM <span x-text="sortIcon('cpm')"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- totals strip -->
+          <div x-show="rows.length > 0" class="mtotals">
+            <div class="mtotals-label">Totals · <span x-text="rows.length + ' ' + levelNounPlural"></span></div>
+            <div class="mtotals-grid">
+              <template x-for="col in visibleOrderedColumns.filter(cc => cc.kind !== 'badge').slice(0, 4)" :key="'t-'+col.id">
+                <div class="mtotals-cell">
+                  <div class="mtotals-k" x-text="col.label"></div>
+                  <div class="mtotals-v" x-html="renderTotalCell(col)"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- loading skeleton -->
+          <template x-if="loading && rows.length === 0">
+            <div class="space-y-2.5">
+              <template x-for="i in 4" :key="'sk-'+i">
+                <div class="mrow-card animate-pulse">
+                  <div class="flex items-center gap-3">
+                    <div class="w-11 h-6 rounded-full bg-gray-200"></div>
+                    <div class="flex-1 space-y-1.5">
+                      <div class="h-3.5 bg-gray-200 rounded w-2/3"></div>
+                      <div class="h-2.5 bg-gray-100 rounded w-1/3"></div>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-2 gap-2 mt-3">
+                    <div class="h-8 bg-gray-100 rounded"></div>
+                    <div class="h-8 bg-gray-100 rounded"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- cards -->
+          <div class="space-y-2.5">
+            <template x-for="c in displayedRows" :key="'m-'+c.id">
+              <article class="mrow-card" :class="c.status === 'ACTIVE' ? 'mrow-on' : 'mrow-off'">
+                <!-- header row: toggle + name + delivery -->
+                <div class="flex items-start gap-3">
+                  <button type="button"
+                          @click="canManage ? toggleStatus(c) : toastError('Ad management is off', manageHint)"
+                          :disabled="isPending(c.id,'status')"
+                          :aria-label="(c.status==='ACTIVE' ? 'Turn off ' : 'Turn on ') + c.name"
+                          :title="canManage ? ((c.status==='ACTIVE' ? 'Turn OFF (pause) ' : 'Turn ON (resume) ') + c.name + ' — sent to Meta immediately') : manageHint"
+                          class="mt-0.5 w-11 h-6 rounded-full flex items-center px-0.5 transition-colors flex-shrink-0"
+                          :class="[ (c.status === 'ACTIVE' ? 'bg-meta-blue justify-end' : 'bg-gray-300 justify-start'), canManage ? 'cursor-pointer' : 'cursor-not-allowed opacity-70', isPending(c.id,'status') ? 'animate-pulse' : '' ]">
+                    <div class="w-5 h-5 rounded-full bg-white shadow-sm"></div>
+                  </button>
+
+                  <div class="min-w-0 flex-1">
+                    <template x-if="nameEdit.id !== c.id">
+                      <div class="flex items-start gap-1.5">
+                        <div class="font-semibold text-[15px] leading-snug break-words flex-1"
+                             :class="canDrillDown ? 'drill-link' : ''"
+                             @click="canDrillDown ? drillInto(c) : null"
+                             x-text="c.name"></div>
+                        <button x-show="canManage" @click.stop="openRename(c)" :disabled="isPending(c.id,'rename')"
+                                aria-label="Rename" title="Rename (label only — does not affect delivery)"
+                                class="text-meta-gray-400 hover:text-meta-blue flex-shrink-0 p-1 -mr-1 -mt-1">
+                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                        </button>
+                      </div>
+                    </template>
+                    <template x-if="nameEdit.id === c.id">
+                      <div class="flex items-center gap-1.5" @click.stop>
+                        <input type="text" x-model="nameEdit.value" maxlength="400"
+                               class="flex-1 min-w-0 border border-gray-300 rounded px-2 py-1.5 text-[15px]"
+                               x-init="$nextTick(() => $el.focus())"
+                               @keydown.enter="saveRename(c)" @keydown.escape="cancelRename()">
+                        <button @click="saveRename(c)" :disabled="isPending(c.id,'rename')" class="text-green-700 font-semibold text-sm px-1">save</button>
+                        <button @click="cancelRename()" class="text-meta-gray-500 text-sm px-1">cancel</button>
+                      </div>
+                    </template>
+                    <div class="mt-1 flex items-center gap-1.5 flex-wrap text-[11px] text-meta-gray-500 font-mono">
+                      <span x-text="c.id"></span>
+                      <template x-if="level === 'adset' && c.campaign_name">
+                        <span class="truncate max-w-[160px]">· <span x-text="c.campaign_name"></span></span>
+                      </template>
+                      <template x-if="level === 'ad' && c.adset_name">
+                        <span class="truncate max-w-[160px]">· <span x-text="c.adset_name"></span></span>
+                      </template>
+                      <template x-if="rowStaleness(c) === 'old'">
+                        <span class="px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[10px] font-semibold uppercase">stale</span>
+                      </template>
+                      <template x-if="rowStaleness(c) === 'stale'">
+                        <span class="px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700 text-[10px] font-semibold uppercase">old</span>
+                      </template>
+                      <template x-if="rowStaleness(c) === 'missing'">
+                        <span class="px-1.5 py-0.5 rounded bg-gray-100 text-meta-gray-600 text-[10px] font-semibold uppercase">no data</span>
+                      </template>
+                    </div>
+                  </div>
+
+                  <div class="flex-shrink-0 text-right" x-html="deliveryBadge(c)"></div>
+                </div>
+
+                <!-- budget line -->
+                <template x-if="level === 'adset' || (level === 'campaign' && rowBudgetKind(c))">
+                  <div class="mt-2.5 flex items-center gap-1.5 text-[13px] bg-meta-gray-50 rounded-lg px-3 py-2">
+                    <template x-if="budgetEdit.id !== c.id">
+                      <span class="inline-flex items-center gap-1.5 flex-wrap">
+                        <span class="text-meta-gray-500">Budget</span>
+                        <span class="font-semibold" x-text="formatBudget(c) || 'not set'"></span>
+                        <button x-show="canManage" @click.stop="openBudgetEdit(c)" :disabled="isPending(c.id,'budget')"
+                                class="text-meta-blue font-medium px-1" :class="isPending(c.id,'budget') ? 'opacity-50' : ''">edit</button>
+                      </span>
+                    </template>
+                    <template x-if="budgetEdit.id === c.id">
+                      <span class="inline-flex items-center gap-1.5 flex-wrap" @click.stop>
+                        <span x-text="account?.currency==='EUR'?'€':(account?.currency==='GBP'?'£':'$')"></span>
+                        <input type="number" min="0" step="0.01" x-model="budgetEdit.dollars"
+                               class="w-24 border border-gray-300 rounded px-2 py-1 text-[14px]"
+                               @keydown.enter="saveBudget(c)" @keydown.escape="cancelBudgetEdit()">
+                        <select x-model="budgetEdit.kind" class="border border-gray-300 rounded px-1.5 py-1 text-[14px]">
+                          <option value="daily">/day</option>
+                          <option value="lifetime">total</option>
+                        </select>
+                        <button @click="saveBudget(c)" :disabled="isPending(c.id,'budget')" class="text-green-700 font-semibold px-1">save</button>
+                        <button @click="cancelBudgetEdit()" class="text-meta-gray-500 px-1">cancel</button>
+                      </span>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="level === 'campaign' && !rowBudgetKind(c)">
+                  <div class="mt-2.5 flex items-center gap-1.5 flex-wrap text-[12px] bg-meta-gray-50 rounded-lg px-3 py-2 text-meta-gray-600">
+                    <span>Budget</span>
+                    <span class="font-medium">ad-set level (ABO)</span>
+                    <button @click.stop="drillInto(c)" class="text-meta-blue font-medium">edit on ad sets →</button>
+                  </div>
+                </template>
+
+                <!-- metrics grid -->
+                <div class="mt-2.5 grid grid-cols-3 gap-px bg-gray-100 rounded-lg overflow-hidden border border-gray-100">
+                  <template x-for="col in visibleOrderedColumns.filter(cc => cc.kind !== 'badge')" :key="'mc-'+c.id+'-'+col.id">
+                    <div class="bg-white px-2.5 py-2">
+                      <div class="mmetric-k" x-text="col.label" :title="col.tip || col.label"></div>
+                      <div class="mmetric-v" :class="col.align === 'right' ? 'tabular-nums' : ''" x-html="renderCell(c, col)"></div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- actions -->
+                <div class="mt-2.5 flex items-center gap-2 flex-wrap">
+                  <button @click.stop="openTools(c)" class="mrow-btn">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                    Insights
+                  </button>
+                  <template x-if="canDrillDown">
+                    <button @click.stop="drillInto(c)" class="mrow-btn">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                      <span x-text="level==='campaign' ? 'Ad sets' : 'Ads'"></span>
+                    </button>
+                  </template>
+                  <template x-if="level === 'campaign' || level === 'adset'">
+                    <button @click.stop="duplicateRow(c)" :disabled="isPending(c.id,'duplicate')"
+                            class="mrow-btn" :class="[canManage ? '' : 'opacity-50', isPending(c.id,'duplicate') ? 'opacity-50' : '']">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                      <span x-text="isPending(c.id,'duplicate') ? 'Duplicating…' : 'Duplicate'"></span>
+                    </button>
+                  </template>
+                  <template x-if="level === 'ad'">
+                    <button @click.stop="openComments(c)" class="mrow-btn">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                      Comments
+                    </button>
+                  </template>
+                </div>
+              </article>
+            </template>
+          </div>
+
+          <!-- empty state -->
+          <div x-show="rows.length === 0 && !loading" class="text-center py-14 px-6 bg-white rounded-lg border border-gray-200">
+            <div class="text-lg font-semibold" x-text="'No ' + levelNounPlural + ' yet'"></div>
+            <div class="mt-1 text-sm text-meta-gray-600">Tap <span class="font-semibold text-meta-blue">Refresh</span> below to fetch the latest data from Meta.</div>
+          </div>
+        </section>
 
         <!-- Recent samples -->
         <details class="mt-6 bg-white rounded-lg border border-gray-200 shadow-sm">
