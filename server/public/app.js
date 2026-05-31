@@ -102,12 +102,34 @@ function dashboard() {
       { id: 'last_30d', label: 'Last 30 days' },
       { id: 'last_90d', label: 'Last 90 days' },
     ],
-    advisorSuggestions: [
-      'How did yesterday compare to our usual day?',
-      'Which campaign is safe to scale right now, and by how much?',
-      'What are people saying in the comments — any objections or spam?',
-      'Find my worst ad set and propose what to do about it',
-    ],
+    get advisorSuggestions() {
+      const fallback = [
+        'How did yesterday compare to our usual day?',
+        'Which campaign is safe to scale right now, and by how much?',
+        'What are people saying in the comments — any objections or spam?',
+        'Find my worst ad set and propose what to do about it',
+      ];
+      const d = this.strategy.data;
+      if (!d) return fallback;
+      const dg = d.decisions || {};
+      const out = [];
+      const decisions = Array.isArray(dg.decisions) ? dg.decisions : [];
+      const top = decisions.find((z) => z.entityName) || decisions[0];
+      if (top && (top.entityName || top.segment)) out.push(`What should I do about ${top.entityName || top.segment}, and why?`);
+      const ll = d.learning && d.learning.learningLimited;
+      if (ll > 0) out.push(`${ll} ad set${ll > 1 ? 's are' : ' is'} learning-limited — how do I fix that?`);
+      if (dg.trend7 && dg.trend7.earlySaturation) out.push('CPM is rising while CTR holds — is the creative fatiguing?');
+      const segs = dg.segments || {};
+      const worse = [...(segs.gender || []), ...(segs.age || []), ...(segs.platform || [])]
+        .find((s) => s.verdict === 'worse' && (s.confidence === 'high' || s.confidence === 'medium'));
+      if (worse) out.push(`Is ${worse.label} really underperforming, and should I act on it?`);
+      const lever = Array.isArray(dg.growth && dg.growth.levers)
+        ? dg.growth.levers.find((l) => l.applicability === 'foundational' || l.applicability === 'primary') : null;
+      if (lever) out.push(`How do I execute: ${lever.lever}?`);
+      out.push('How did yesterday compare to our usual day?');
+      out.push('Any objections or spam in the comments to handle?');
+      return [...new Set(out)].slice(0, 4);
+    },
 
     get canManage() {
       return !!this.safety.allowAdManagement && !this.safety.killSwitch;
@@ -878,9 +900,77 @@ function dashboard() {
     async openStrategy() {
       this.strategy.open = true;
       this.loadProfile();
+      if (!this.strategy.chat.messages.length) this._loadChat();
       if (!this.strategy.data && !this.strategy.loading) await this.runStrategy();
     },
     closeStrategy() { this.strategy.open = false; },
+    // Jump from any analysis card into the chat with a precise, numbers-grounded question.
+    askAdvisor(q) {
+      if (!q || this.strategy.chat.loading) return;
+      this.setStrategyTab('chat');
+      this.strategy.chat.input = q;
+      this.$nextTick(() => this.sendChat());
+    },
+    // Live % vs the entity's current daily budget, recomputed as the operator edits the approval.
+    budgetPct(a) {
+      const cur = a && a.current ? Number(a.current.dailyBudget) : NaN;
+      const v = Number(a && a.editBudget);
+      if (!Number.isFinite(cur) || cur <= 0 || !Number.isFinite(v)) return null;
+      return Math.round(((v - cur) / cur) * 1000) / 10;
+    },
+    _initApproval(a) {
+      a.status = 'pending';
+      if (a.tool === 'set_budget') a.editBudget = (a.args && a.args.daily_budget != null) ? a.args.daily_budget : '';
+      return a;
+    },
+    // Persist the visible conversation so a page reload doesn't lose the thread (the server already
+    // logs turns to strategy_chat for debugging; this restores the exact UI state — cards + previews).
+    _persistChat() {
+      try {
+        const c = this.strategy.chat;
+        const payload = { sessionId: c.sessionId, messages: c.messages, savedAt: Date.now() };
+        let s = JSON.stringify(payload);
+        if (s.length > 1500000) {
+          s = JSON.stringify({ ...payload, messages: c.messages.map((m) => ({ ...m, previews: [] })) });
+        }
+        localStorage.setItem('gfm.advisorChat.v1', s);
+      } catch (e) { /* non-fatal */ }
+    },
+    _loadChat() {
+      try {
+        const raw = localStorage.getItem('gfm.advisorChat.v1');
+        if (!raw) return;
+        const p = JSON.parse(raw);
+        if (!p || !Array.isArray(p.messages) || !p.messages.length) return;
+        if (Date.now() - (p.savedAt || 0) > 24 * 3600 * 1000) { localStorage.removeItem('gfm.advisorChat.v1'); return; }
+        this.strategy.chat.messages = p.messages.map((m) => ({
+          ...m,
+          streaming: false,
+          tools: (m.tools || []).map((t) => ({ ...t, status: t.status === 'running' ? 'done' : t.status })),
+          approvals: (m.approvals || []).map((a) => ({ ...a, status: a.status === 'approving' ? 'pending' : a.status })),
+        }));
+        this.strategy.chat.sessionId = p.sessionId || '';
+      } catch (e) { /* non-fatal */ }
+    },
+    newChat() {
+      const c = this.strategy.chat;
+      c.messages = []; c.input = ''; c.error = ''; c.sessionId = '';
+      try { localStorage.removeItem('gfm.advisorChat.v1'); } catch (e) { /* non-fatal */ }
+    },
+    // Re-send the last user message after a failed turn (drops the empty assistant placeholder first).
+    retryChat() {
+      const c = this.strategy.chat;
+      if (c.loading) return;
+      while (c.messages.length && c.messages[c.messages.length - 1].role === 'assistant' && !c.messages[c.messages.length - 1].content) c.messages.pop();
+      let content = '';
+      for (let i = c.messages.length - 1; i >= 0; i -= 1) {
+        if (c.messages[i].role === 'user' && !c.messages[i].system) { content = c.messages[i].content; c.messages.splice(i, 1); break; }
+      }
+      c.error = '';
+      if (!content) return;
+      c.input = content;
+      this.sendChat();
+    },
     setStrategyTab(tab) {
       if (this.strategy.tab === tab) return;
       this.strategy.tab = tab;
@@ -982,7 +1072,7 @@ function dashboard() {
           const data = await r.json().catch(() => ({}));
           if (data.ok) {
             const i = ensureAsst(); c.messages[i].content = data.reply; c.messages[i].model = data.model; c.messages[i].streaming = false;
-            (data.approvals || []).forEach((a) => { a.status = 'pending'; a.armed = data.advisorWritesEnabled === true; c.messages[i].approvals.push(a); });
+            (data.approvals || []).forEach((a) => { this._initApproval(a); a.armed = data.advisorWritesEnabled === true; c.messages[i].approvals.push(a); });
             this.finalizeAssistant(c.messages[i]);
           }
           else c.error = data.message || data.error || 'Advisor unavailable';
@@ -1019,7 +1109,7 @@ function dashboard() {
             else if (ev.type === 'approval') {
               const m = c.messages[ensureAsst()];
               const a = ev.approval || {};
-              a.status = 'pending';
+              this._initApproval(a);
               a.armed = ev.armed === true;
               m.approvals.push(a);
               this.scrollChatBottom();
@@ -1036,6 +1126,7 @@ function dashboard() {
       } finally {
         c.loading = false;
         this.refreshUsage();
+        this._persistChat();
         this.$nextTick(() => this.scrollChatBottom());
       }
     },
@@ -1106,6 +1197,22 @@ function dashboard() {
       return ((this.strategy.data && this.strategy.data.campaigns) || [])
         .map((c) => c.name).filter((n) => n && !used.has(n));
     },
+    get strategyDataAgeLabel() {
+      const d = this.strategy.data;
+      if (!d || !d.generatedAt) return 'no analysis loaded yet';
+      const t = new Date(d.generatedAt).getTime();
+      if (Number.isNaN(t)) return d.window || '';
+      const sec = Math.max(0, Math.floor((this.nowTick - t) / 1000));
+      const rel = sec < 60 ? `${sec}s ago` : sec < 3600 ? `${Math.floor(sec / 60)}m ago` : `${Math.floor(sec / 3600)}h ago`;
+      return `as of ${rel} · ${d.window || ''}`;
+    },
+    get strategyDataStale() {
+      const d = this.strategy.data;
+      if (!d || !d.generatedAt) return false;
+      const t = new Date(d.generatedAt).getTime();
+      if (Number.isNaN(t)) return false;
+      return (this.nowTick - t) > 30 * 60 * 1000;
+    },
     // Arm/disarm real execution at runtime (per-action approval still required).
     async toggleArm() {
       const s = this.strategy;
@@ -1156,18 +1263,34 @@ function dashboard() {
       const c = this.strategy.chat;
       const m = c.messages[mi]; if (!m || !m.approvals) return;
       const a = m.approvals[ai]; if (!a || a.status !== 'pending' || c.loading) return;
+      // Apply any operator edits to the proposed value before executing (the server re-validates the
+      // entity + adManager guards; the value/text is the only thing that changed).
+      const args = { ...(a.args || {}) };
+      if (a.tool === 'set_budget') {
+        const v = Number(a.editBudget);
+        if (!Number.isFinite(v) || v <= 0) { a.resultMsg = 'Enter a valid daily budget.'; a.status = 'failed'; return; }
+        args.daily_budget = v;
+        a.summary = `Set ${a.level} "${a.entityName}" daily budget to $${v}/day`;
+      }
+      if (a.tool === 'moderate_comment' && a.args && a.args.action === 'reply') {
+        const txt = (a.replyText || '').trim();
+        if (!txt) { a.resultMsg = 'Reply text cannot be empty.'; a.status = 'failed'; return; }
+        args.reply_text = txt;
+        a.summary = `Reply to ${a.entityName}: "${txt.slice(0, 60)}"`;
+      }
       a.status = 'approving';
       a.decidedOutcome = null;
       try {
         const r = await fetch('/api/strategy/tool/execute', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: a.tool, args: a.args, sessionId: c.sessionId, decision: 'approve' }),
+          body: JSON.stringify({ name: a.tool, args, sessionId: c.sessionId, decision: 'approve' }),
         });
         const data = await r.json().catch(() => ({}));
         if (data.ok) { a.status = 'applied'; a.resultMsg = 'Applied to Meta'; a.decidedOutcome = `"${a.summary}" was APPLIED successfully`; }
         else if (data.error === 'advisor_writes_disabled') { a.status = 'dryrun'; a.resultMsg = 'Live actions are off — nothing sent to Meta'; a.decidedOutcome = `"${a.summary}" was approved but Live actions are OFF, so nothing was sent to Meta (dry-run)`; }
         else { a.status = 'failed'; a.resultMsg = (data.result && data.result.message) || data.message || data.error || 'Failed'; a.decidedOutcome = `"${a.summary}" did NOT apply (${a.resultMsg})`; }
       } catch (e) { a.status = 'failed'; a.resultMsg = String(e); a.decidedOutcome = `"${a.summary}" failed (${String(e)})`; }
+      this._persistChat();
       this.$nextTick(() => this.scrollChatBottom());
       await this.continueAfterApprovals(mi);
     },
@@ -1183,6 +1306,7 @@ function dashboard() {
           body: JSON.stringify({ name: a.tool, args: a.args, sessionId: c.sessionId, decision: 'reject' }),
         });
       } catch {}
+      this._persistChat();
       this.$nextTick(() => this.scrollChatBottom());
       await this.continueAfterApprovals(mi);
     },
@@ -1206,27 +1330,46 @@ function dashboard() {
         .replace(/\**\s*\[FOLLOWUPS\][\s\S]*$/i, '')
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const lines = esc.split('\n');
-      let html = ''; let inList = false;
+      let html = ''; let listType = null;
+      const closeList = () => { if (listType) { html += listType === 'ol' ? '</ol>' : '</ul>'; listType = null; } };
       const inline = (s) => s
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-meta-gray-100 text-[11px]">$1</code>');
-      for (let raw of lines) {
-        const line = raw.trim();
+        .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-meta-gray-100 text-[11px]">$1</code>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, t, u) => `<a href="${u.replace(/&amp;/g, '&')}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">${t}</a>`);
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i].trim();
+        const next = i + 1 < lines.length ? lines[i + 1].trim() : '';
+        if (line.includes('|') && /-/.test(next) && /^\|?[\s:|-]+\|?$/.test(next)) {
+          closeList();
+          const splitRow = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+          const headers = splitRow(line);
+          i += 1;
+          const rows = [];
+          while (i + 1 < lines.length && lines[i + 1].includes('|') && lines[i + 1].trim() !== '') { i += 1; rows.push(splitRow(lines[i].trim())); }
+          html += '<div class="overflow-x-auto my-1"><table class="w-full text-[11px] border-collapse">';
+          html += '<thead><tr>' + headers.map((h) => `<th class="text-left font-semibold border-b border-gray-200 px-1.5 py-1">${inline(h)}</th>`).join('') + '</tr></thead>';
+          html += '<tbody>' + rows.map((r) => '<tr>' + r.map((c) => `<td class="border-b border-gray-100 px-1.5 py-1 align-top">${inline(c)}</td>`).join('') + '</tr>').join('') + '</tbody>';
+          html += '</table></div>';
+          continue;
+        }
         if (/^#{1,6}\s+/.test(line)) {
-          if (inList) { html += '</ul>'; inList = false; }
+          closeList();
           html += `<div class="font-semibold mt-2">${inline(line.replace(/^#{1,6}\s+/, ''))}</div>`;
+        } else if (/^\d+\.\s+/.test(line)) {
+          if (listType !== 'ol') { closeList(); html += '<ol class="list-decimal list-inside space-y-0.5 my-1">'; listType = 'ol'; }
+          html += `<li>${inline(line.replace(/^\d+\.\s+/, ''))}</li>`;
         } else if (/^[-*]\s+/.test(line)) {
-          if (!inList) { html += '<ul class="list-disc list-inside space-y-0.5 my-1">'; inList = true; }
+          if (listType !== 'ul') { closeList(); html += '<ul class="list-disc list-inside space-y-0.5 my-1">'; listType = 'ul'; }
           html += `<li>${inline(line.replace(/^[-*]\s+/, ''))}</li>`;
         } else if (line === '') {
-          if (inList) { html += '</ul>'; inList = false; }
+          closeList();
           html += '<div class="h-2"></div>';
         } else {
-          if (inList) { html += '</ul>'; inList = false; }
+          closeList();
           html += `<div>${inline(line)}</div>`;
         }
       }
-      if (inList) html += '</ul>';
+      closeList();
       return html;
     },
     async _copyText(text) {

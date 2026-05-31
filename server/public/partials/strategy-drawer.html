@@ -184,6 +184,7 @@
                                 <div class="flex items-center gap-2">
                                   <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold border" :class="confClass(a.confidence)" x-text="a.confidence"></span>
                                   <span class="text-sm font-medium" x-text="a.title"></span>
+                                  <button @click="askAdvisor('How exactly do I do this, step by step: ' + a.title + '?')" class="ml-auto text-[10px] text-indigo-600 hover:underline flex-shrink-0" title="Discuss this with the advisor">Ask ↗</button>
                                 </div>
                                 <div class="text-[12px] text-meta-gray-600 mt-1" x-text="a.why"></div>
                                 <div x-show="a.what_to_wait_for" class="text-[11px] text-yellow-700 mt-1" x-text="'⏳ ' + a.what_to_wait_for"></div>
@@ -222,6 +223,7 @@
                                 <div>
                                   <span class="font-medium text-meta-gray-800" x-text="g.title"></span>
                                   <span class="text-[10px] text-meta-gray-400" x-text="'· ' + g.effort"></span>
+                                  <button @click="askAdvisor('How do I execute this growth move: ' + g.title + '? Give me the exact structure and budget.')" class="text-[10px] text-indigo-600 hover:underline ml-1" title="Discuss this with the advisor">Ask ↗</button>
                                   <div class="text-meta-gray-600" x-text="g.why"></div>
                                 </div>
                               </div>
@@ -297,6 +299,7 @@
                             <span class="text-sm font-medium" x-text="z.entityName || z.segment || '—'"></span>
                             <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold border" :class="confClass(z.confidence && z.confidence.tier)" :title="'Confidence ' + (z.confidenceScore||'') + '/100 — driven by conversion sample size + how many days the signal held + day-of-week adjustment.'" x-text="(z.confidence && z.confidence.tier) || 'low'"></span>
                             <span x-show="z.campaignName" class="text-[10px] text-meta-gray-400" x-text="z.campaignName"></span>
+                            <button @click="askAdvisor('Walk me through what to do about ' + (z.entityName || z.segment) + ' and why — be specific with numbers.')" class="ml-auto text-[10px] text-indigo-600 hover:underline flex-shrink-0" title="Discuss this with the advisor">Ask ↗</button>
                           </div>
                           <div class="text-[12px] text-meta-gray-600 mt-0.5" x-text="z.rationale"></div>
                           <div x-show="z.wow && (z.wow.cpaChangePct!=null || z.wow.roasChangePct!=null)" class="flex items-center gap-2 mt-1 text-[11px]" title="Week-over-week: last 7 days vs the prior 7 days for this campaign.">
@@ -464,6 +467,7 @@
                           <div class="flex items-center gap-2">
                             <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold border" :class="sevClass(c.severity)" x-text="c.qualityPct"></span>
                             <span class="text-[13px] font-medium truncate" x-text="c.adName"></span>
+                            <button @click="askAdvisor('Should I refresh the creative for ' + c.adName + '? What specifically would you change about the hook, visual or offer?')" class="ml-auto text-[10px] text-indigo-600 hover:underline flex-shrink-0" title="Discuss this with the advisor">Ask ↗</button>
                           </div>
                           <div class="text-[11px] text-meta-gray-500 mt-0.5" x-text="(c.campaignName||'') + (c.cpa!=null ? ' · $'+c.cpa+'/'+d.kpi : '') + ' · ' + c.impressions.toLocaleString() + ' impr · freq ' + (c.frequency??'—')"></div>
                         </div>
@@ -853,6 +857,15 @@
                     </div>
                   </div>
                 </div>
+                <!-- data freshness + new chat -->
+                <div class="flex items-center gap-2 mb-2 text-[11px] flex-shrink-0">
+                  <span class="text-meta-gray-500">Data:</span>
+                  <span :class="strategyDataStale ? 'text-amber-600 font-medium' : 'text-meta-gray-600'" x-text="strategyDataAgeLabel"></span>
+                  <button @click="runStrategy()" :disabled="strategy.loading" class="text-indigo-600 hover:underline disabled:opacity-50" title="Re-pull the snapshot (one batched read to Meta).">refresh</button>
+                  <span x-show="strategyDataStale" class="text-amber-600" title="The snapshot is over 30 minutes old — refresh so the advisor reasons on current numbers (or just ask it to check live).">⚠ stale</span>
+                  <span class="flex-1"></span>
+                  <button @click="newChat()" x-show="strategy.chat.messages.length" class="text-meta-gray-500 hover:text-indigo-600" title="Clear this conversation and start a new one.">+ New chat</button>
+                </div>
                 <!-- messages scroll area -->
                 <div id="advisor-chat-scroll" class="flex-1 overflow-y-auto space-y-3 pr-1">
                   <!-- empty / intro state -->
@@ -932,13 +945,29 @@
                                 <div class="px-3 py-2 text-[12px] space-y-1 bg-white">
                                   <div><span class="text-meta-gray-400" x-text="a.kind==='comment' ? 'Comment:' : 'Target:'"></span> <span class="font-medium text-meta-gray-800" x-text="a.entityName"></span> <span class="text-meta-gray-400 text-[10.5px]" x-text="a.kind==='comment' ? '· comment' : ('· ' + a.level + ' · id ' + a.entityId)"></span></div>
                                   <!-- a drafted reply gets its own quoted block so the operator reviews the exact wording -->
-                                  <template x-if="a.kind==='comment' && a.replyText">
+                                  <template x-if="a.kind==='comment' && a.replyText && a.status==='pending'">
+                                    <div class="border-l-2 border-indigo-300 bg-indigo-50/50 rounded-r px-2 py-1 mt-1">
+                                      <span class="text-[9.5px] uppercase tracking-wide text-indigo-400">reply to post (editable)</span>
+                                      <textarea x-model="a.replyText" rows="3" class="w-full text-[12px] text-meta-gray-700 bg-white border border-indigo-200 rounded px-2 py-1 mt-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-300"></textarea>
+                                    </div>
+                                  </template>
+                                  <template x-if="a.kind==='comment' && a.replyText && a.status!=='pending'">
                                     <div class="text-[12px] text-meta-gray-700 border-l-2 border-indigo-300 bg-indigo-50/50 rounded-r px-2 py-1 mt-1">
                                       <span class="text-[9.5px] uppercase tracking-wide text-indigo-400">reply to post</span>
                                       <div x-text="a.replyText"></div>
                                     </div>
                                   </template>
-                                  <template x-if="a.change && !(a.kind==='comment' && a.replyText)">
+                                  <template x-if="a.tool==='set_budget' && a.status==='pending'">
+                                    <div class="flex items-center gap-1.5 flex-wrap">
+                                      <span class="text-meta-gray-400">daily budget:</span>
+                                      <span class="line-through text-meta-gray-400" x-text="a.change.from"></span>
+                                      <span class="text-meta-gray-400">→ $</span>
+                                      <input type="number" min="1" step="1" x-model="a.editBudget" class="w-20 text-[12px] font-semibold text-emerald-600 border border-gray-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-300">
+                                      <span class="text-meta-gray-400 text-[10.5px]">/day</span>
+                                      <span x-show="budgetPct(a) != null" class="text-[10.5px]" :class="Math.abs(budgetPct(a))>20 ? 'text-amber-600 font-semibold' : 'text-meta-gray-400'" x-text="'(' + (budgetPct(a)>0?'+':'') + budgetPct(a) + '%)'"></span>
+                                    </div>
+                                  </template>
+                                  <template x-if="a.change && !(a.kind==='comment' && a.replyText) && !(a.tool==='set_budget' && a.status==='pending')">
                                     <div class="flex items-center gap-1.5 flex-wrap">
                                       <span class="text-meta-gray-400" x-text="a.change.field + ':'"></span>
                                       <span class="line-through text-meta-gray-400" x-text="a.change.from"></span>
@@ -1026,7 +1055,10 @@
                   </template>
 
                   <template x-if="strategy.chat.error">
-                    <div class="bg-red-50 border border-red-200 text-red-700 text-[12px] rounded-lg p-3" x-text="strategy.chat.error"></div>
+                    <div class="bg-red-50 border border-red-200 text-red-700 text-[12px] rounded-lg p-3 flex items-start gap-2">
+                      <span class="flex-1" x-text="strategy.chat.error"></span>
+                      <button @click="retryChat()" :disabled="strategy.chat.loading" class="font-medium underline hover:no-underline disabled:opacity-50 flex-shrink-0">Retry</button>
+                    </div>
                   </template>
                 </div>
 
