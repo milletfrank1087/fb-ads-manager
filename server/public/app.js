@@ -1236,11 +1236,20 @@ function dashboard() {
         get_ad_preview: 'Loading ad preview',
         re_analyze: 'Re-analyzing account',
         get_comments: 'Reading comments',
+        compute: 'Computing',
+        query_data: 'Querying snapshot',
+        get_query_schema: 'Reading data schema',
+        measure_incrementality: 'Measuring incrementality',
+        record_finding: 'Saving finding',
       };
       let label = verbs[name] || name;
+      if (name === 'compute' && args && args.op) { label += ` · ${String(args.op).replace(/_/g, ' ')}`; return label; }
+      if (name === 'query_data') return label;
+      if (name === 'record_finding') { if (args && args.title) label += ` · ${String(args.title).slice(0, 40)}`; return label; }
       const hint = args && (args.name || (args.level === 'account' ? 'account' : '') || args.scope || args.window);
       if (hint) label += ` · ${hint}`;
       if (args && args.breakdown && args.breakdown !== 'none') label += ` (${args.breakdown})`;
+      if (args && args.granularity === 'daily') label += ' (daily)';
       return label;
     },
     toolIcon(name) {
@@ -1250,6 +1259,11 @@ function dashboard() {
         get_ad_preview: 'M4 5h16v14H4zM4 15l4-4 3 3 4-5 5 6',
         re_analyze: 'M4 4v6h6M20 20v-6h-6M5 13a7 7 0 0012 4M19 11a7 7 0 00-12-4',
         get_comments: 'M8 10h8M8 14h5M21 12a8 8 0 01-11.6 7.1L4 20l1-4.3A8 8 0 1121 12z',
+        compute: 'M9 7h6M9 11h6m-6 4h3M5 4h14v16H5z',
+        query_data: 'M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zm0 0v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7',
+        get_query_schema: 'M4 6h16M4 12h16M4 18h10',
+        measure_incrementality: 'M3 17l6-6 4 4 7-8M14 7h7v7',
+        record_finding: 'M5 4h11l3 3v13H5zM9 4v5h6',
       }[name] || 'M5 12h14';
       return `<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="${p}"/></svg>`;
     },

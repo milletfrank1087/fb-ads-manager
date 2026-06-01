@@ -337,6 +337,20 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS findings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  detail TEXT,
+  entity_name TEXT,
+  watch_metric TEXT,
+  decide_by TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  source TEXT NOT NULL DEFAULT 'advisor',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_findings_created ON findings(created_at);
+CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
 `;
 
 db.exec(SCHEMA);
@@ -364,6 +378,48 @@ try {
   log.warn('store.migration.backfill_first_seen.failed', { error: String(err.message || err) });
 }
 log.info('store.init', { path: DB_PATH, tables: db.prepare("SELECT count(*) c FROM sqlite_master WHERE type='table'").get().c });
+
+// ---------- Read-only query surface for the AI advisor (query_data tool) ----------
+// A SEPARATE connection opened in readonly mode: writes throw at the SQLite engine level (defense
+// layer 1). On top of that we enforce SELECT/WITH-only, single-statement, a table ALLOWLIST (the
+// "semantic layer" — analytics tables only; never config/PII/chat), no comments, and a capped LIMIT.
+// This lets the agent ground numbers in deterministic SQL instead of recalling them, without ever
+// being able to mutate state or read secrets/PSIDs/operator config. (Untrusted comment text can
+// reach the model, so the surface is deliberately narrow — see AGENTS.md injection posture.)
+const roDb = new Database(DB_PATH, { readonly: true });
+roDb.pragma('busy_timeout = 4000');
+
+// Tables the advisor may read. Analytics + our own audit/notes only. Deliberately EXCLUDES:
+// comments (public PII + message bodies), moderation_log / blocked_users (PSIDs),
+// strategy_chat (could echo injected content / loop), app_settings + safety_state (config),
+// usage_samples (noise). comment_analyses (category/severity, no PII) and ad_posts (our own ad copy)
+// are allowed so comment SIGNAL can still be joined to campaigns.
+const QUERY_ALLOWED_TABLES = new Set([
+  'account', 'campaigns', 'adsets', 'ads', 'insights_snapshot',
+  'ad_actions', 'ad_posts', 'comment_analyses', 'findings',
+]);
+const QUERY_FORBIDDEN = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX|GRANT|REVOKE|TRIGGER|INTO)\b/i;
+const QUERY_MAX_ROWS = 500;
+
+function validateReadOnlySql(rawSql) {
+  const sql = String(rawSql || '').trim().replace(/;+\s*$/, '');
+  if (!sql) return { ok: false, error: 'empty_query', message: 'Provide a SQL SELECT query.' };
+  if (sql.length > 4000) return { ok: false, error: 'too_long', message: 'Query too long (max 4000 chars).' };
+  if (/--|\/\*|\*\//.test(sql)) return { ok: false, error: 'no_comments', message: 'SQL comments are not allowed.' };
+  if (sql.includes(';')) return { ok: false, error: 'single_statement', message: 'Only a single statement is allowed (no ";").' };
+  if (!/^(SELECT|WITH)\b/i.test(sql)) return { ok: false, error: 'select_only', message: 'Only SELECT / WITH queries are allowed.' };
+  if (QUERY_FORBIDDEN.test(sql)) return { ok: false, error: 'forbidden_keyword', message: 'Only read-only SELECT queries are allowed (no writes/DDL/PRAGMA).' };
+  // Every table referenced after FROM/JOIN must be in the allowlist.
+  const refs = [...sql.matchAll(/\b(?:FROM|JOIN)\s+["'`]?([a-zA-Z_][a-zA-Z0-9_]*)["'`]?/gi)].map((m) => m[1].toLowerCase());
+  const bad = refs.filter((t) => !QUERY_ALLOWED_TABLES.has(t));
+  if (bad.length) {
+    return { ok: false, error: 'table_not_allowed', message: `Table(s) not queryable: ${[...new Set(bad)].join(', ')}. Allowed: ${[...QUERY_ALLOWED_TABLES].join(', ')}.` };
+  }
+  // Enforce a LIMIT (auto-append if absent).
+  let finalSql = sql;
+  if (!/\bLIMIT\s+\d+/i.test(sql)) finalSql = `${sql} LIMIT ${QUERY_MAX_ROWS}`;
+  return { ok: true, sql: finalSql };
+}
 
 const upsertAccountStmt = db.prepare(`
 INSERT INTO account (id, name, currency, timezone_name, account_status, amount_spent, spend_cap, business_id, last_synced_at)
@@ -1410,5 +1466,63 @@ export const store = {
   },
   getBlocked() {
     return db.prepare('SELECT * FROM blocked_users ORDER BY (unblocked_at IS NULL) DESC, blocked_at DESC').all();
+  },
+
+  // ---------- AI advisor: read-only query (query_data tool) ----------
+
+  // Returns the column dictionary for the queryable (allowlisted) tables — the "semantic layer" the
+  // agent is shown so it writes correct SQL. Never exposes non-allowlisted tables.
+  getQuerySchema() {
+    const out = {};
+    for (const t of QUERY_ALLOWED_TABLES) {
+      try {
+        const cols = roDb.prepare(`PRAGMA table_info(${t})`).all();
+        out[t] = cols.map((c) => c.name);
+      } catch { /* table may not exist yet */ }
+    }
+    return out;
+  },
+
+  // Executes a guarded read-only SELECT and returns { columns, rows, rowCount }. Throws nothing —
+  // returns { ok:false, error, message } on any rejection so the model can repair its query.
+  runReadOnlyQuery(rawSql) {
+    const v = validateReadOnlySql(rawSql);
+    if (!v.ok) return v;
+    try {
+      const stmt = roDb.prepare(v.sql); // better-sqlite3 rejects multi-statement at prepare time too
+      const rows = stmt.all();
+      const capped = rows.slice(0, QUERY_MAX_ROWS);
+      const columns = capped.length ? Object.keys(capped[0]) : (stmt.columns ? stmt.columns().map((c) => c.name) : []);
+      return { ok: true, sql: v.sql, columns, rows: capped, rowCount: capped.length, truncated: rows.length > QUERY_MAX_ROWS };
+    } catch (err) {
+      return { ok: false, error: 'sql_error', message: String(err.message || err).slice(0, 300) };
+    }
+  },
+
+  // ---------- AI advisor: findings journal (record_finding tool / memory) ----------
+
+  addFinding({ title, detail = null, entity_name = null, watch_metric = null, decide_by = null, status = 'open', source = 'advisor' }) {
+    return db.prepare(`
+      INSERT INTO findings (title, detail, entity_name, watch_metric, decide_by, status, source)
+      VALUES (@title, @detail, @entity_name, @watch_metric, @decide_by, @status, @source)
+    `).run({
+      title: String(title).slice(0, 300),
+      detail: detail != null ? String(detail).slice(0, 2000) : null,
+      entity_name: entity_name != null ? String(entity_name).slice(0, 200) : null,
+      watch_metric: watch_metric != null ? String(watch_metric).slice(0, 120) : null,
+      decide_by: decide_by != null ? String(decide_by).slice(0, 40) : null,
+      status: ['open', 'watching', 'resolved', 'dismissed'].includes(status) ? status : 'open',
+      source: String(source).slice(0, 40),
+    }).lastInsertRowid;
+  },
+
+  getFindings(limit = 20, { openOnly = false } = {}) {
+    const where = openOnly ? "WHERE status IN ('open','watching')" : '';
+    return db.prepare(`SELECT * FROM findings ${where} ORDER BY id DESC LIMIT ?`).all(Math.min(100, Math.max(1, Number(limit) || 20)));
+  },
+
+  setFindingStatus(id, status) {
+    if (!['open', 'watching', 'resolved', 'dismissed'].includes(status)) return 0;
+    return db.prepare('UPDATE findings SET status = ? WHERE id = ?').run(status, id).changes;
   },
 };

@@ -6,6 +6,7 @@ import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, get
 import { INSIGHTS_FIELDS, normalizeInsightsRow } from './insights.js';
 import { store } from './store.js';
 import * as comments from './comments.js';
+import { poissonCountCI, cpaWithCI, segmentVsBaseline, sampleConfidence, decisionConfidence, pctChange as statPctChange, zScore as statZScore, mean as statMean, stdev as statStdev, median as statMedian } from './stats.js';
 
 // ============================================================================
 // Tier 1 READ-ONLY tools for the conversational advisor.
@@ -50,8 +51,85 @@ export const STRATEGY_TOOLS = [
           name: { type: 'string', description: 'Substring of the campaign or ad set name to pull (case-insensitive). Map the operator\'s words to a real entity name from the snapshot — e.g. "the French campaign" -> the campaign whose name contains "France". Omit for account-level.' },
           window: { type: 'string', enum: ['today', 'yesterday', 'last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d'], description: 'Date window. Map natural language: "yesterday" -> yesterday, "this week" -> last_7d. Default last_7d.' },
           breakdown: { type: 'string', enum: ['none', 'age_gender', 'country', 'platform', 'placement', 'device', 'hourly'], description: 'Segment the pull. Default none (totals only).' },
+          granularity: { type: 'string', enum: ['total', 'daily'], description: 'total = one summarized row (default). daily = the DAY-BY-DAY series (spend/conversions/cpa/roas per day) so you can see the trajectory, spot when a metric broke, or correlate with a change. Ignored when a breakdown is set.' },
         },
         required: ['level'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'compute',
+      description: 'Deterministic statistics & arithmetic calculator. ALWAYS use this instead of doing math in your head — it gives the exact number plus an honest uncertainty interval, so you never state a fabricated or mis-divided figure. At this account\'s low conversion volume, point estimates lie; this returns Bayesian/Poisson intervals + a confidence tier so you can say "probably, but not enough data yet". Use for: a CPA/ROAS, a % change, comparing two CPAs, judging whether a segment is really worse, sizing a budget move, or any calculation behind a recommendation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          op: {
+            type: 'string',
+            enum: ['arithmetic', 'cpa_ci', 'compare_cpa', 'pct_change', 'z_score', 'weekly_rate', 'roas', 'decision_confidence', 'summary_stats'],
+            description: 'arithmetic = evaluate a numeric expression (e.g. "50000/2.3"). cpa_ci = CPA + 95% interval from spend & conversions. compare_cpa = is group A\'s CPA really different from B/baseline (Poisson-interval test). pct_change = % change from->to. z_score = (value-mean)/sd. weekly_rate = scale a count in N days to a weekly rate. roas = value/spend. decision_confidence = tier from conversions+persistence. summary_stats = mean/median/sd of a number list.',
+          },
+          expression: { type: 'string', description: 'For op=arithmetic only: a numbers-and-operators expression (digits . + - * / % parentheses). No variables or functions.' },
+          args: { type: 'object', description: 'Inputs for the chosen op, e.g. {spend, conversions} for cpa_ci; {spend, conversions, baselineCpa} or {spendA,convA,spendB,convB} for compare_cpa; {from,to} for pct_change; {value,mean,sd} for z_score; {count,days} for weekly_rate; {value,spend} for roas; {conversions,persistenceDays} for decision_confidence; {values:[...]} for summary_stats.' },
+        },
+        required: ['op'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'query_data',
+      description: 'Run a READ-ONLY SQL SELECT over the local snapshot database (the dashboard\'s own cached data) to ground a number in a deterministic query instead of recalling it. Use for flexible look-ups the fixed tools can\'t do: rank/filter/aggregate/join across campaigns, ad sets, ads, cached insights, your own change-log (ad_actions) and saved findings. SELECT/WITH only; a LIMIT is auto-added. Call get_query_schema first if unsure of table/column names. NOTE: this reads the CACHED snapshot (as of the last refresh) — for truly live numbers use get_fresh_insights.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string', description: 'A single read-only SQL SELECT (SQLite dialect). Example: "SELECT name, spend, cost_per_purchase FROM campaigns c JOIN insights_snapshot i ON i.entity_id=c.id AND i.entity_level=\'campaign\' AND i.date_preset=\'last_7d\' ORDER BY spend DESC LIMIT 10". No writes, no ";", no comments.' },
+        },
+        required: ['sql'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_query_schema',
+      description: 'List the tables and columns you may query with query_data (the analytics "semantic layer"). Call this before writing a non-trivial SQL query so you use real column names. Returns only the allowlisted analytics tables (no PII/config).',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'measure_incrementality',
+      description: 'The CAUSAL lens: estimate whether ads actually CAUSED conversions, not just got attribution credit (platform ROAS over-credits). mode="design" returns a holdout plan sized to this small budget (geo or time-based on/off). mode="readout" takes a recent on/off change (a pause/resume from the change-log, or an explicit change_date) for a campaign and estimates rough incremental lift + iROAS using a before/after vs the rest-of-account control (difference-in-differences), WITH a wide interval + honest confidence caveat. Use when the operator asks "is this campaign actually working / worth it", "did pausing X hurt", or about incrementality / true ROI.',
+      parameters: {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', enum: ['design', 'readout'], description: 'design = propose a holdout test. readout = estimate lift from a real on/off event. Default readout if a name is given, else design.' },
+          name: { type: 'string', description: 'Campaign name substring (for readout, or to scope a design).' },
+          change_date: { type: 'string', description: 'Optional YYYY-MM-DD of the on/off event for readout. If omitted, the most recent pause/resume in the change-log for that entity is used.' },
+          window: { type: 'string', enum: ['last_30d', 'last_90d'], description: 'History window for the daily series. Default last_90d.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'record_finding',
+      description: 'Save a note / hypothesis / watch-item to the advisor\'s durable memory so it carries across chats (e.g. "Portugal CPA elevated 2 days, z=1.8 — decide Fri if it persists"). At low volume, confidence is built by STACKING evidence over days, not from one pull — this closes that loop. Use when you spot something real but not yet actionable, or want to remember to re-check after a change. It writes ONLY to local memory (never to Meta) and needs no approval.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short headline of the finding (required).' },
+          detail: { type: 'string', description: 'The evidence/context (numbers, why it matters).' },
+          entity: { type: 'string', description: 'Campaign/ad set name it concerns, if any.' },
+          watch_metric: { type: 'string', description: 'The metric to re-check, e.g. "CPA" or "ROAS".' },
+          decide_by: { type: 'string', description: 'When to decide, e.g. "Fri" or a date.' },
+        },
+        required: ['title'],
       },
     },
   },
@@ -295,6 +373,22 @@ async function getFreshInsights(args) {
     return { ok: true, entity: targetName, level, window, breakdown, rows };
   }
 
+  // daily series (trajectory) — one row per day so the model can see WHEN a metric moved
+  if (args.granularity === 'daily') {
+    const res = await fb.get(`/${targetId}/insights`, {
+      fields: 'spend,impressions,reach,inline_link_clicks,actions,action_values', time_increment: 1, date_preset: window === 'today' || window === 'yesterday' ? 'last_7d' : window, limit: 200,
+    }, 'GET:/strategy-tool/insights-daily');
+    if (!res.ok) return { ok: false, error: 'fetch_failed', message: res.message || 'Meta read failed.' };
+    const series = (res.body?.data || []).map((r) => {
+      const m = normalizeInsightsRow(r, level === 'account' ? 'campaign' : level);
+      const conv = nz(m.purchasesTotal) || nz(m.landingPageViewsTotal) || nz(m.linkClicks);
+      return { date: r.date_start, spend: round(nz(m.spend)), conversions: conv, cpa: round(div(nz(m.spend), conv)), roas: m.purchaseValueTotal ? round(div(nz(m.purchaseValueTotal), nz(m.spend))) : null };
+    });
+    const cpas = series.map((d) => d.cpa).filter((n) => Number.isFinite(n));
+    const trend = { meanCpa: round(statMean(cpas)), sdCpa: round(statStdev(cpas)), latestCpa: cpas.length ? cpas[cpas.length - 1] : null, days: series.length };
+    return { ok: true, entity: targetName, level, window, granularity: 'daily', series, trend, note: 'Daily series. Use the compute tool (z_score / compare_cpa) to judge whether a recent day is real movement vs noise — do not eyeball it.' };
+  }
+
   // totals only
   const res = await fb.get(`/${targetId}/insights`, {
     fields: INSIGHTS_FIELDS, date_preset: window, limit: 1,
@@ -425,12 +519,218 @@ function getCommentsTool(args) {
   };
 }
 
+// ---------- compute: deterministic stats & arithmetic (no I/O, no arbitrary code) ----------
+
+// Safe arithmetic: the regex guarantees ONLY digits and math operators — no identifiers are possible,
+// so there is no way to reach any global, require, or process. (This is the constrained, audited
+// alternative to a code sandbox — see the research/AGENTS.md injection posture.)
+function safeArithmetic(expr) {
+  const s = String(expr || '').trim();
+  if (!s) return { ok: false, error: 'empty_expression', message: 'Provide an expression for op=arithmetic.' };
+  if (s.length > 200) return { ok: false, error: 'too_long', message: 'Expression too long.' };
+  if (!/^[\d\s.+\-*/%()]+$/.test(s)) return { ok: false, error: 'invalid_chars', message: 'Only digits and + - * / % ( ) are allowed (no variables or functions).' };
+  try {
+    // eslint-disable-next-line no-new-func
+    const val = Function(`"use strict"; return (${s});`)();
+    if (typeof val !== 'number' || !Number.isFinite(val)) return { ok: false, error: 'not_finite', message: 'Expression did not evaluate to a finite number (check for divide-by-zero).' };
+    return { ok: true, expression: s, value: round(val, 4) };
+  } catch (err) {
+    return { ok: false, error: 'eval_error', message: String(err.message || err).slice(0, 160) };
+  }
+}
+
+function computeTool(args) {
+  const op = (args.op || '').toString();
+  const a = (args.args && typeof args.args === 'object') ? args.args : {};
+  const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : NaN);
+  try {
+    switch (op) {
+      case 'arithmetic':
+        return safeArithmetic(args.expression);
+      case 'cpa_ci': {
+        const r = cpaWithCI(num(a.spend), num(a.conversions));
+        const conf = sampleConfidence(num(a.conversions));
+        return { ok: true, op, cpa: r.cpa, ci95: [r.lo, r.hi], conversions: r.n, confidence: conf.tier, note: r.cpa == null ? 'Not enough data for a CPA.' : `95% of the time the true CPA sits in [${r.lo}, ${r.hi}]. Confidence ${conf.tier} (n=${r.n}).` };
+      }
+      case 'compare_cpa': {
+        if (Number.isFinite(num(a.baselineCpa))) {
+          const r = segmentVsBaseline({ spend: num(a.spend), conversions: num(a.conversions), baselineCpa: num(a.baselineCpa) });
+          return { ok: true, op, ...r, note: `Verdict "${r.verdict}" vs baseline CPA ${a.baselineCpa} (confidence ${r.confidence}). "similar"/"insufficient" = not enough evidence to act.` };
+        }
+        const cpaA = cpaWithCI(num(a.spendA), num(a.convA));
+        const cpaB = cpaWithCI(num(a.spendB), num(a.convB));
+        const r = segmentVsBaseline({ spend: num(a.spendA), conversions: num(a.convA), baselineCpa: cpaB.cpa });
+        return { ok: true, op, groupA: { cpa: cpaA.cpa, ci95: [cpaA.lo, cpaA.hi], n: cpaA.n }, groupB: { cpa: cpaB.cpa, ci95: [cpaB.lo, cpaB.hi], n: cpaB.n }, verdict: r.verdict, confidence: r.confidence, note: `Group A is "${r.verdict}" than B. Only act on "better"/"worse" with medium+ confidence.` };
+      }
+      case 'pct_change':
+        return { ok: true, op, pct_change: statPctChange(num(a.from), num(a.to)) };
+      case 'z_score': {
+        const z = statZScore(num(a.value), num(a.mean), num(a.sd));
+        return { ok: true, op, z, note: z == null ? 'Need value, mean, sd.' : `|z|>=2 means a real anomaly; |z|<2 is normal day-to-day noise. This z=${z}.` };
+      }
+      case 'weekly_rate': {
+        const count = num(a.count); const days = num(a.days);
+        if (!(days > 0)) return { ok: false, error: 'bad_days', message: 'days must be > 0.' };
+        const weekly = round((count * 7) / days);
+        const ci = poissonCountCI(count);
+        return { ok: true, op, weekly_rate: weekly, conversions_in_window: count, days, weekly_ci95: [ci.lo != null ? round((ci.lo * 7) / days) : null, ci.hi != null ? round((ci.hi * 7) / days) : null], note: `≈${weekly}/week. Cost/Bid Cap only sane above ~50/week.` };
+      }
+      case 'roas': {
+        const v = num(a.value); const s = num(a.spend);
+        return { ok: true, op, roas: s > 0 ? round(v / s) : null, note: 'Platform ROAS = attribution, NOT incrementality — use measure_incrementality for causal ROI.' };
+      }
+      case 'decision_confidence': {
+        const c = decisionConfidence({ conversions: num(a.conversions) || 0, persistenceDays: num(a.persistenceDays) || 0, clearedNoise: !!a.clearedNoise });
+        return { ok: true, op, ...c, note: 'Kill/scale needs high/medium tier (≥15 conv + ≥3 days persistence). Below that: watch, don\'t act.' };
+      }
+      case 'summary_stats': {
+        const vals = Array.isArray(a.values) ? a.values.map(num).filter((n) => Number.isFinite(n)) : [];
+        if (!vals.length) return { ok: false, error: 'no_values', message: 'Provide args.values = [numbers].' };
+        return { ok: true, op, n: vals.length, mean: round(statMean(vals)), median: round(statMedian(vals)), sd: round(statStdev(vals)), min: round(Math.min(...vals)), max: round(Math.max(...vals)) };
+      }
+      default:
+        return { ok: false, error: 'unknown_op', message: `Unknown op "${op}".` };
+    }
+  } catch (err) {
+    return { ok: false, error: 'compute_error', message: String(err.message || err).slice(0, 160) };
+  }
+}
+
+// ---------- query_data: read-only SQL over the local snapshot (semantic layer) ----------
+
+function queryDataTool(args) {
+  const sql = (args.sql || '').toString();
+  if (!sql.trim()) return { ok: false, error: 'missing_sql', message: 'Provide a SQL SELECT. Call get_query_schema if unsure of names.' };
+  const res = store.runReadOnlyQuery(sql);
+  if (!res.ok) return res;
+  return { ok: true, sql: res.sql, rowCount: res.rowCount, columns: res.columns, rows: res.rows, truncated: res.truncated, note: res.truncated ? 'Truncated to the row cap — add filters or aggregate.' : undefined };
+}
+
+function getQuerySchemaTool() {
+  return { ok: true, tables: store.getQuerySchema(), note: 'These are the only tables query_data can read (SELECT-only). insights_snapshot is keyed by (entity_level, entity_id, date_preset); join to campaigns/adsets/ads on entity_id. Money columns are in account currency. ad_actions = your own change log.' };
+}
+
+// ---------- measure_incrementality: causal lens (suggest/read only) ----------
+
+function incrementalityDesign(args) {
+  const scope = args.name ? `for "${args.name}"` : 'for this account';
+  return {
+    ok: true,
+    mode: 'design',
+    plan: {
+      recommended: 'time-based on/off (geo holdout is the gold standard but needs more budget than this account has)',
+      why: 'Meta Conversion Lift needs ~$30k/mo; at $20-40/day/campaign that is out of reach. The honest small-budget options are geo and time holdouts.',
+      geo_holdout: 'This account already runs ~one campaign per country — that IS a geo split. Pause the campaign in ONE comparable country for 2-3 weeks while keeping others on; compare donation rate in the paused geo vs the on geos (difference-in-differences). Best when two geos historically move together.',
+      time_holdout: `Turn the campaign ${scope} OFF for 10-14 days, then back ON, and compare total account donations (net of the rest-of-account trend) in the off vs on periods. Cheaper but confounded by seasonality — run ≥2 weeks each side.`,
+      readout: 'After the test, call measure_incrementality(mode:"readout", name, change_date) to estimate incremental lift + iROAS with an interval.',
+      caveat: 'Quasi-experiments support a causal reading only under their assumptions (stable pre-trend / comparable geos). Treat the result as directional, not a Conversion Lift study.',
+    },
+  };
+}
+
+async function measureIncrementality(args) {
+  const window = ['last_30d', 'last_90d'].includes(args.window) ? args.window : 'last_90d';
+  const mode = ['design', 'readout'].includes(args.mode) ? args.mode : (args.name ? 'readout' : 'design');
+  if (mode === 'design') return incrementalityDesign(args);
+
+  const ent = resolveEntity(args.name, 'campaign');
+  if (!ent) return { ok: false, error: 'entity_not_found', message: `No campaign matching "${args.name}". Name the campaign to read out.` };
+
+  let changeDate = (args.change_date || '').toString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(changeDate)) {
+    const acts = (store.getAdActions(300) || []).filter((x) => x.entity_id === ent.id && /status/i.test(x.action || '') && x.success);
+    if (acts.length) changeDate = (acts[0].created_at || '').slice(0, 10);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(changeDate)) {
+    return { ok: false, error: 'no_change_event', message: `No pause/resume found in the change log for "${ent.name}". Pass change_date (YYYY-MM-DD), or use mode:"design" to set up a test.` };
+  }
+
+  const res = await fb.get(`/${config.primaryAccountId}/insights`, {
+    level: 'campaign', time_increment: 1, date_preset: window,
+    fields: 'campaign_id,spend,actions,action_values', limit: 1000,
+  }, 'GET:/strategy-tool/incrementality');
+  if (!res.ok) return { ok: false, error: 'fetch_failed', message: res.message || 'Meta read failed.' };
+
+  const entDaily = {}; const ctrlDaily = {};
+  for (const r of (res.body?.data || [])) {
+    const m = normalizeInsightsRow(r, 'campaign');
+    const conv = nz(m.purchasesTotal) || nz(m.landingPageViewsTotal) || nz(m.linkClicks);
+    const bucket = r.campaign_id === ent.id ? entDaily : ctrlDaily;
+    const d = r.date_start;
+    bucket[d] = bucket[d] || { spend: 0, conv: 0, value: 0 };
+    bucket[d].spend += nz(m.spend); bucket[d].conv += conv; bucket[d].value += nz(m.purchaseValueTotal);
+  }
+  const agg = (obj, keep) => {
+    const s = { spend: 0, conv: 0, value: 0, days: 0 };
+    for (const [d, v] of Object.entries(obj)) { if (keep(d)) { s.spend += v.spend; s.conv += v.conv; s.value += v.value; s.days += 1; } }
+    return s;
+  };
+  const pre = (d) => d < changeDate; const post = (d) => d >= changeDate;
+  const eP = agg(entDaily, pre); const eQ = agg(entDaily, post);
+  const cP = agg(ctrlDaily, pre); const cQ = agg(ctrlDaily, post);
+  if (eP.days < 5 || eQ.days < 3) return { ok: false, error: 'insufficient_history', message: `Not enough days around ${changeDate} in ${window} (pre=${eP.days}d, post=${eQ.days}d). Try window:"last_90d" or a more recent change.` };
+
+  const rate = (s) => (s.days ? s.conv / s.days : 0);
+  const spendRate = (s) => (s.days ? s.spend / s.days : 0);
+  const direction = spendRate(eQ) < spendRate(eP) ? 'paused/reduced' : 'resumed/increased';
+  // Control trend factor (how the rest of the account moved pre->post), used to net out shared shocks.
+  const cPre = rate(cP); const cPost = rate(cQ);
+  const trendFactor = cPre > 0 ? cPost / cPre : 1;
+  const acctPre = rate(eP) + cPre; const acctPost = rate(eQ) + cPost;
+  const expectedAcctPost = acctPre * trendFactor; // counterfactual: account if only the trend applied
+  const incrementalDaily = round(acctPost - expectedAcctPost, 2); // negative after a pause = donations truly lost
+  const valuePerConv = eP.conv > 0 ? eP.value / eP.conv : (cP.conv > 0 ? cP.value / cP.conv : null);
+  const spendDeltaDaily = round(spendRate(eP) - spendRate(eQ), 2); // + = spend saved by pausing
+  let iROAS = null;
+  if (direction === 'paused/reduced' && spendDeltaDaily > 0 && valuePerConv != null) {
+    iROAS = round((Math.max(0, -incrementalDaily) * valuePerConv) / spendDeltaDaily, 2);
+  }
+  const conf = sampleConfidence(eP.conv);
+
+  return {
+    ok: true,
+    mode: 'readout',
+    entity: ent.name,
+    change_date: changeDate,
+    direction,
+    window,
+    entity_daily: { pre: { conv: round(rate(eP)), spend: round(spendRate(eP)) }, post: { conv: round(rate(eQ)), spend: round(spendRate(eQ)) } },
+    rest_of_account_daily: { pre: round(cPre), post: round(cPost), trend_factor: round(trendFactor) },
+    account_daily_conv: { observed_post: round(acctPost), expected_post_if_only_trend: round(expectedAcctPost) },
+    estimated_incremental_daily_conversions: incrementalDaily,
+    estimated_iroas_of_campaign: iROAS,
+    confidence: conf.tier,
+    interpretation: direction === 'paused/reduced'
+      ? `After pausing, account donations/day were ${round(acctPost)} vs ${round(expectedAcctPost)} expected from the rest-of-account trend. The gap (${incrementalDaily}/day) is the rough INCREMENTAL effect: if it's near 0, the campaign was barely incremental (donors converted anyway); if strongly negative, the campaign was genuinely driving net-new donations.`
+      : `After resuming/scaling, the account ran ${round(acctPost)}/day vs ${round(expectedAcctPost)} expected on trend; the gap (${incrementalDaily}/day) is the rough incremental gain.`,
+    caveat: `Quasi-experiment (difference-in-differences vs rest-of-account), not a randomized lift test. Confidence ${conf.tier} (n=${eP.conv} pre-period conversions). Confounded by seasonality and any same-day changes to other campaigns. Treat as directional.`,
+  };
+}
+
+// ---------- record_finding: durable advisor memory (local only) ----------
+
+function recordFinding(args) {
+  const title = (args.title || '').toString().trim();
+  if (!title) return { ok: false, error: 'missing_title', message: 'Provide a title for the finding.' };
+  try {
+    const id = store.addFinding({ title, detail: args.detail, entity_name: args.entity, watch_metric: args.watch_metric, decide_by: args.decide_by });
+    return { ok: true, saved: true, id, note: 'Saved to advisor memory — it will appear as standing context in future chats so you can stack evidence over time.' };
+  } catch (err) {
+    return { ok: false, error: 'save_failed', message: String(err.message || err).slice(0, 160) };
+  }
+}
+
 const EXECUTORS = {
   get_fresh_insights: getFreshInsights,
   get_change_history: getChangeHistory,
   get_ad_preview: getAdPreviewTool,
   re_analyze: reAnalyze,
   get_comments: getCommentsTool,
+  compute: computeTool,
+  query_data: queryDataTool,
+  get_query_schema: getQuerySchemaTool,
+  measure_incrementality: measureIncrementality,
+  record_finding: recordFinding,
 };
 
 // ---------- Tier 2 write tools: build an approval PROPOSAL (no execution) ----------
@@ -725,6 +1025,22 @@ export function buildAdvisorMemory() {
     if (chat.length) {
       const lines = chat.slice(0, 8).map((r) => `- ${(r.created_at || '').slice(0, 16)}: ${String(r.content).slice(0, 140)}`);
       parts.push('RECENT ADVISOR PROPOSALS → OPERATOR DECISIONS (memory; don\'t re-propose a rejected one):\n' + lines.join('\n'));
+    }
+  } catch { /* ignore */ }
+
+  // Open findings — hypotheses/watch-items you saved in past chats. This is how confidence is built
+  // at low volume: stack evidence across days. Re-check these; resolve or escalate when due.
+  try {
+    const found = (store.getFindings(10, { openOnly: true }) || []);
+    if (found.length) {
+      const lines = found.map((f) => {
+        const bits = [f.title];
+        if (f.entity_name) bits.push(`(${f.entity_name})`);
+        if (f.watch_metric) bits.push(`watch ${f.watch_metric}`);
+        if (f.decide_by) bits.push(`decide by ${f.decide_by}`);
+        return `- [#${f.id}] ${bits.join(' · ')}`;
+      });
+      parts.push('OPEN FINDINGS / WATCH-ITEMS (your saved memory — re-check these and stack evidence; use record_finding to update):\n' + lines.join('\n'));
     }
   } catch { /* ignore */ }
 

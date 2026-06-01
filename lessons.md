@@ -11,6 +11,21 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-06-01 Advisor "absolute confidence" tool stack — deterministic compute, read-only SQL, incrementality, durable findings
+
+Overhauled the Ask-Advisor tool stack from 10 → 15 tools to make analysis *defensible* rather than recalled. Research-driven (Anthropic "writing effective tools for agents", agent SQL-safety guidance, small-sample incrementality / quasi-experiment literature):
+
+- **The #1 hallucination source at this volume is the model doing arithmetic in its head**, then stating a fabricated/mis-divided CPA as fact. Fix = a deterministic `compute(op)` tool over the existing `stats.js` (9 ops: arithmetic, cpa_ci, compare_cpa, pct_change, z_score, weekly_rate, roas, decision_confidence, summary_stats). It returns the number **plus a 95% Poisson/Bayesian interval + confidence tier**, so "low/insufficient" forces an honest "not enough data yet" instead of fake precision.
+- **A code-execution sandbox was considered and REJECTED.** Untrusted public comment text reaches the model (indirect prompt-injection) and the Node process holds the never-expiring Meta system-user token in memory → arbitrary RCE is an unacceptable token-exfil/abuse path. The safe equivalent is *constrained* compute: `compute`'s `arithmetic` uses a regex-guarded `Function` (`^[\d\s.+\-*/%()]+$`) so no identifier — hence no `process`/`require`/global — can appear. Verified: `compute(arithmetic, "process.env")` → `invalid_chars`.
+- **Read-only SQL for an LLM is safe ONLY with layered defenses**, not a single check. Implemented (in `store.js`): a SEPARATE `better-sqlite3` connection opened `{ readonly:true }` (engine throws on any write) + `validateReadOnlySql()` (SELECT/WITH-only, single statement / no `;`, no `--`/`/* */`, keyword blocklist, **table ALLOWLIST = analytics semantic layer**, auto `LIMIT 500`). The allowlist is the load-bearing control: it EXCLUDES `comments`/`moderation_log`/`blocked_users` (PII/PSIDs), `strategy_chat` (could echo injected text / loop), `app_settings`/`safety_state` (config). Verified rejections: DELETE, UPDATE, multi-statement, comment, non-allowlisted table, PII table.
+- **Incrementality from a pause is a quasi-experiment, not a lift study.** `measure_incrementality(readout)` does difference-in-differences vs the rest-of-account control (synthetic-control-lite) off a real `ad_actions` pause/resume, and ALWAYS ships a wide interval + "directional only" caveat. At <€2k/wk a real Conversion Lift test is unaffordable, but this account already runs ~one campaign per geo = a natural geo holdout (the `design` mode says so).
+- **Confidence at low volume is built by STACKING evidence over days, not from one pull.** `record_finding` + a `findings` table give the advisor durable memory (local only, no approval, never touches Meta); open findings resurface via `buildAdvisorMemory()` so the next chat re-checks them.
+- **Tool-count discipline:** research says selection accuracy degrades past ~15-20 tools, so we op-dispatched (compute = 9 ops in 1 tool; query_data = 1 SQL tool, not a tool-per-query) and folded daily granularity into `get_fresh_insights` rather than adding a tool. `maxIters` 4→6 for compute→query→measure chains.
+
+Evidence: offline smoke (`server/smoke_tools.mjs`, since removed) = 28/28 assertions pass; server boots clean; `/api/strategy/profile` memory builder renders findings end-to-end.
+
+Consequence: the advisor now grounds recommendation numbers in compute/query/fresh-pull (load-bearing prompt rule), and kill/scale advice requires medium+ confidence (≥15 conv + ≥3-day persistence) or is downgraded to "watch".
+
 ## 2026-06-01 Empty-body 403 on ad writes (edge rejection, not perms) + error-capture fix
 
 First live advisor write in production (set_budget on ad set `120243920433560464`, $150→$500/day) failed. Diagnosed end-to-end:
