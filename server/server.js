@@ -392,6 +392,7 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
   const toolSummary = (name, r) => {
     if (!r || r.ok === false) return r?.message ? `failed: ${String(r.message).slice(0, 120)}` : 'failed';
     if (name === 'get_fresh_insights') {
+      if (r.granularity === 'daily') return `${r.entity}: ${r.series?.length || 0}-day series${r.trend?.meanCpa != null ? `, mean CPA $${r.trend.meanCpa}` : ''} (${r.window})`;
       if (r.rows) return `${r.entity}: ${r.rows.length} ${r.breakdown} rows (${r.window})`;
       const t = r.totals; return t ? `${r.entity}: $${t.spend} spend, ${t.cpa != null ? 'CPA $' + t.cpa : 'no conv'} (${r.window})` : `${r.entity}: no spend (${r.window})`;
     }
@@ -402,6 +403,27 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
       if (r.scope === 'summary') return `${r.summary?.total ?? 0} comments · ${r.summary?.needs_reply ?? 0} need reply · ${r.summary?.flagged ?? 0} flagged`;
       return `${r.count} ${r.scope} comment(s)`;
     }
+    if (name === 'compute') {
+      switch (r.op) {
+        case 'arithmetic': return `= ${r.value}`;
+        case 'cpa_ci': return r.cpa != null ? `CPA $${r.cpa} (95% $${r.ci95?.[0]}–$${r.ci95?.[1]}, ${r.confidence})` : 'no CPA (insufficient data)';
+        case 'compare_cpa': return `${r.verdict}${r.confidence ? ` (${r.confidence})` : ''}`;
+        case 'pct_change': return `${r.pct_change}%`;
+        case 'z_score': return r.z != null ? `z = ${r.z}` : 'z unavailable';
+        case 'weekly_rate': return `≈ ${r.weekly_rate}/week`;
+        case 'roas': return r.roas != null ? `ROAS ${r.roas}` : 'ROAS n/a';
+        case 'decision_confidence': return `${r.tier} (score ${r.score})`;
+        case 'summary_stats': return `mean ${r.mean} · median ${r.median} · sd ${r.sd} (n=${r.n})`;
+        default: return r.value != null ? `= ${r.value}` : 'computed';
+      }
+    }
+    if (name === 'query_data') return `${r.rowCount} row(s)${r.truncated ? ' (truncated)' : ''}${Array.isArray(r.columns) && r.columns.length ? ` · ${r.columns.slice(0, 6).join(', ')}` : ''}`;
+    if (name === 'get_query_schema') return `${Object.keys(r.tables || {}).length} queryable tables`;
+    if (name === 'measure_incrementality') {
+      if (r.mode === 'design') return 'holdout test plan';
+      return `${r.entity}: ~${r.estimated_incremental_daily_conversions}/day incremental${r.estimated_iroas_of_campaign != null ? `, iROAS ${r.estimated_iroas_of_campaign}` : ''} (${r.confidence}, ${r.direction})`;
+    }
+    if (name === 'record_finding') return `saved finding #${r.id}`;
     return 'done';
   };
   const persistTool = (name, args, r) => {
@@ -439,7 +461,7 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
     if (phase === 'start') { res.write(`data: ${JSON.stringify({ type: 'tool', phase: 'start', name, args })}\n\n`); return; }
     toolsUsed.push({ name, ok: result?.ok !== false });
     persistTool(name, args, result);
-    const evt = { type: 'tool', phase: 'done', name, ok: result?.ok !== false, summary: toolSummary(name, result) };
+    const evt = { type: 'tool', phase: 'done', name, args, ok: result?.ok !== false, summary: toolSummary(name, result) };
     if (name === 'get_ad_preview' && result?.ok && result.iframe) evt.preview = { iframe: result.iframe, adName: result.adName };
     res.write(`data: ${JSON.stringify(evt)}\n\n`);
   };

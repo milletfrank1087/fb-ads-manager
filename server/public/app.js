@@ -1099,9 +1099,17 @@ function dashboard() {
               if (ev.phase === 'start') {
                 m.tools.push({ name: ev.name, args: ev.args || {}, label: this.toolLabel(ev.name, ev.args), status: 'running', summary: '', expanded: false });
               } else {
+                const hasArgs = ev.args && typeof ev.args === 'object' && Object.keys(ev.args).length;
                 const t = [...m.tools].reverse().find((x) => x.name === ev.name && x.status === 'running');
-                if (t) { t.status = ev.ok ? 'done' : 'failed'; t.summary = ev.summary || ''; }
-                else m.tools.push({ name: ev.name, args: {}, label: this.toolLabel(ev.name, {}), status: ev.ok ? 'done' : 'failed', summary: ev.summary || '', expanded: false });
+                if (t) {
+                  t.status = ev.ok ? 'done' : 'failed';
+                  t.summary = ev.summary || '';
+                  // The streamed "start" fires before args finish streaming (args:{}), so backfill the
+                  // real args + relabel now that the done event carries them.
+                  if (hasArgs) { t.args = ev.args; t.label = this.toolLabel(ev.name, ev.args); }
+                } else {
+                  m.tools.push({ name: ev.name, args: ev.args || {}, label: this.toolLabel(ev.name, ev.args || {}), status: ev.ok ? 'done' : 'failed', summary: ev.summary || '', expanded: false });
+                }
                 if (ev.preview && ev.preview.iframe) m.previews.push(ev.preview);
               }
               this.scrollChatBottom();

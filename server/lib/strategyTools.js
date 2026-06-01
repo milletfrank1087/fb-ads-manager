@@ -395,7 +395,7 @@ async function getFreshInsights(args) {
   }, 'GET:/strategy-tool/insights');
   if (!res.ok) return { ok: false, error: 'fetch_failed', message: res.message || 'Meta read failed.' };
   const rows = res.body?.data || [];
-  if (!rows.length) return { ok: true, entity: targetName, level, window, totals: null, note: 'No spend in this window.' };
+  if (!rows.length) return { ok: true, entity: targetName, level, window, totals: null, note: `No delivery for "${targetName}" in ${window} — it may be paused, just launched, or have a same-name duplicate. Try a longer window (e.g. last_30d) or check status with get_change_history before concluding it's off.` };
   return { ok: true, entity: targetName, level, window, totals: summarizeTotals(rows, level) };
 }
 
