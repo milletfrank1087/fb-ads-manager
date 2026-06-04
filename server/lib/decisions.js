@@ -200,7 +200,7 @@ function buildSaturation(reach) {
 // is deliberate: prospecting carries the real incremental growth (55-75% incremental) vs retargeting
 // (15-35%, systematically over-credited), and bid/cost caps STARVE delivery at this budget. CAPI is
 // the foundational unlock. Everything is suggest-only and gated on this account's actual numbers.
-function buildGrowth({ totals = {}, campaigns = [], saturation, signal, kpi, days = 30 }) {
+function buildGrowth({ totals = {}, campaigns = [], adsets = [], saturation, signal, kpi, days = 30 }) {
   const capiReady = signal?.capiDetected === true;
   const kpiWord = (kpi?.label || 'conversions').replace(/s$/, '');
 
@@ -275,12 +275,26 @@ function buildGrowth({ totals = {}, campaigns = [], saturation, signal, kpi, day
   levers.push({ lever: 'Small abandoner-retargeting layer', applicability: abandoners ? 'ready' : 'gated',
     why: `${abandoners ? `~${abandoners} checkout/cart abandoners are your warmest pool. ` : 'Once site traffic is sufficient, '}Run ONE small ad set (checkout/cart abandoners, 7-14d, EXCLUDE past donors, friction-removal creative), keep it <20% of budget, judge on 1-day-click. Retargeting ROAS is systematically over-credited — most of those donors would have given anyway.` });
   levers.push({ lever: 'Value Optimization', applicability: valueCandidate ? 'ready' : 'gated', gatedOn: valueCandidate ? null : (capiReady ? 'more weekly donations' : 'Conversions API'), why: value.note });
-  levers.push({ lever: 'Bid / cost caps', applicability: 'avoid',
-    why: 'NOT a lever at this budget — caps need ~50 conv/wk AND ~€5k/wk per ad set; below ~€2k/wk total they starve delivery. Stay on Lowest Cost; control CPA via creative, audience and exclusions instead.' });
+
+  // Caps are gated on per-ad-set CONVERSION VOLUME, not a spend floor: it's the weekly conversion count
+  // (read live from `adsets`), not total spend, that gives a cap enough auction wins to optimize.
+  const capEligible = (adsets || [])
+    .filter((a) => a.status === 'ACTIVE' && nz(a.weeklyEvents) >= LEARNING_EVENTS_PER_WEEK && a.kpiCpa != null)
+    .sort((x, y) => nz(y.weeklyEvents) - nz(x.weeklyEvents));
+  if (capEligible.length) {
+    const top = capEligible[0];
+    const targetCap = round(top.kpiCpa * 1.15);
+    const ceiling = avgDonation != null ? round(avgDonation) : null;
+    levers.push({ lever: 'Cost cap on the scaled winner(s)', applicability: 'ready',
+      why: `${capEligible.length} ad set(s) now clear ~${LEARNING_EVENTS_PER_WEEK} conv/wk AND have exited learning (top: "${top.name}" ~${top.weeklyEvents}/wk at ${money(top.kpiCpa)} CPA) — a cap is a viable SCALING tool here, not a starvation risk. Two-governor method: DUPLICATE the winner, set the budget high (2-3×) and let a COST cap ≈ ${money(targetCap)} (current CPA ×1.15${ceiling != null ? `, kept under the ~${money(ceiling)} breakeven ceiling = avg donation ÷ target ROAS` : ''}) govern actual spend instead of the budget — Meta then spends UP on cheap-conversion days and PULLS BACK otherwise. Watch 48-72h; ratchet the cap down ~5-10% while delivery holds; loosen/revert if it stalls. Never cap the live original (a bid-strategy change resets learning).` });
+  } else {
+    levers.push({ lever: 'Bid / cost caps', applicability: 'avoid',
+      why: 'Not yet a lever — a cap needs an ACTIVE, learning-complete ad set sustaining ~50 conv/wk (it is conversion VOLUME, not total spend, that feeds a cap). No ad set clears that right now, so a cap would starve delivery. Stay on Lowest Cost; control CPA via creative, audience and exclusions, and revisit once an ad set graduates.' });
+  }
 
   return {
     funnel, headroom, value, levers,
-    note: 'Growth order for a low-budget donation account: fix tracking (CAPI) → expand high-incrementality PROSPECTING (donor lookalikes per geo, then interests) → add only a SMALL abandoner-retargeting layer → unlock Value Optimization once CAPI + volume allow. Avoid bid caps at this scale.',
+    note: `Growth order for this donation account: fix tracking (CAPI) → expand high-incrementality PROSPECTING (donor lookalikes per geo, then interests) → add only a SMALL abandoner-retargeting layer → unlock Value Optimization once CAPI + volume allow. ${capEligible.length ? 'A cost cap (two-governor / inflated-budget) is now appropriate on the scaled winner(s) — test on a duplicate.' : 'Bid/cost caps stay off until an ad set sustains ~50 conv/wk.'}`,
   };
 }
 
@@ -498,12 +512,14 @@ function capGraduationFlags(adsets, kpi) {
   const out = [];
   for (const a of adsets.filter((x) => x.status === 'ACTIVE')) {
     if (nz(a.weeklyEvents) >= LEARNING_EVENTS_PER_WEEK && a.kpiCpa != null) {
+      const strong = nz(a.weeklyEvents) >= 2 * LEARNING_EVENTS_PER_WEEK;
+      const targetCap = money(round(a.kpiCpa * 1.15));
       out.push({
         scope: 'adset', action: 'cost_cap_candidate', entityId: a.id, entityName: a.name, campaignName: a.campaignName,
-        confidence: { tier: 'low', score: 40 }, confidenceScore: 40,
-        rationale: `Graduated learning (~${a.weeklyEvents} ${kpi.label}/wk, stable cost ${money(a.kpiCpa)}). It's now a candidate for a Cost Cap a little above its current ${kpi.label} cost to defend efficiency while scaling — but caps can throttle delivery, so test on a duplicate, never the live winner.`,
-        evidence: { weeklyEvents: a.weeklyEvents, cpa: a.kpiCpa },
-        whatToWaitFor: `Only apply a cap to a duplicated ad set; if delivery stalls, revert. Lowest Cost is the safe default until volume is consistent.`,
+        confidence: strong ? { tier: 'medium', score: 60 } : { tier: 'low', score: 45 }, confidenceScore: strong ? 60 : 45,
+        rationale: `Graduated learning (~${a.weeklyEvents} ${kpi.label}/wk${strong ? `, well over the ~${LEARNING_EVENTS_PER_WEEK}/wk a cap needs` : ''}, stable cost ${money(a.kpiCpa)}). Cap-ready: DUPLICATE it, set the budget high (2-3×) and let a COST cap ≈ ${targetCap} (current cost ×1.15) govern spend — the cap, not the budget, paces delivery, so it spends up on cheap days and pulls back otherwise. Watch 48-72h, ratchet the cap down ~5-10% while it holds. Never cap the live original (the bid-strategy change resets learning).`,
+        evidence: { weeklyEvents: a.weeklyEvents, cpa: a.kpiCpa, suggestedCostCap: round(a.kpiCpa * 1.15) },
+        whatToWaitFor: `Only apply a cap to a duplicated ad set; if delivery stalls, loosen it or revert. Lowest Cost is the safe default until weekly volume is consistent.`,
       });
     }
   }
@@ -576,7 +592,7 @@ export function buildDecisionDigest(ctx) {
   };
 
   // Growth/revenue-expansion advisory (needs `signal` for CAPI status and `saturation` for headroom).
-  const growth = buildGrowth({ totals, campaigns, saturation, signal, kpi, days });
+  const growth = buildGrowth({ totals, campaigns, adsets, saturation, signal, kpi, days });
 
   // priority list: real actions first (kill > scale > duplicate > targeting > refresh > caps), holds/watch last
   const ACTION_RANK = { pause: 0, scale_down: 1, scale_up: 2, duplicate: 3, narrow_targeting: 4, expand_targeting: 5, refresh_creative: 6, cost_cap_candidate: 7, hold: 8, watch: 9 };

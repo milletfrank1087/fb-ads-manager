@@ -11,6 +11,21 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-06-04 Live account read corrects the "never caps / sub-50 / sub-€2k" playbook assumption
+
+Ran two bounded, proxied reads through the running server (`POST /api/strategy/analyze`, windows `last_7d` + `last_30d`; ~13 batched ops each, well under the 500/day cap; READONLY mode, kill switch released) to ground the bidding playbook in reality instead of the old "this is a tiny account" guess.
+
+- **The account is NOT sub-threshold anymore.** 30d: $5,748.64 spend / 801 purchases / CPA $7.18 / ROAS 3.84 / freq 1.57 / avg donation $27.55. 7d: $2,907 spend / 278 purchases / CPA $10.46 / ROAS 2.86 — i.e. ~$400-450/day and ~250-280 donations/week. That's **above the old "<€2k/wk → caps starve" gate**.
+- **A flagship ad set is genuinely cap-eligible.** `($350/day) US - Broad - Volume - Comments - Copy` (camp GBM Emily - USA, ACTIVE): **115 conv/week, learning-COMPLETE (`learnLimited=false`), CPA $13.35, ROAS 2.85, freq 1.27** (low → headroom), avg donation ~$38. By every practitioner threshold (≥50 conv/wk, out of learning, stable cost) this is a valid cost-cap candidate — the old blanket "never caps at this volume" was simply wrong for this entity.
+- **The binding gate is CONVERSION VOLUME per ad set, not a total-spend floor.** My earlier "$5k/week per ad set" floor had no evidence behind it; a $350/day ($~2.45k/wk) ad set comfortably produces 115 conv/wk at a $7-13 CPA, so a cap would be fed, not starved. Other active ad sets ($75/day US = 35/wk; US LLA 1% = 5/wk) are still below 50/wk → correctly stay Lowest Cost. Several strong converters (PT 69-106/wk, IT 34-37/wk) were **paused** at read time — note status, not just volume.
+- **Value Optimization's volume gate is already cleared** (~250-280 donations/wk ≫ the ~50-100/wk bar). The only remaining VO gate is clean CAPI purchase-value — so it moves from "someday" to "confirm CAPI, then real A/B test." One ad set (IT) already runs `optimization_goal=VALUE`.
+
+Evidence: `data/_cap_analysis_{7d,30d}.json` (gitignored runtime output) via the proxied strategist; per-entity `weeklyEvents`/`kpiCpa`/`learningLimited` come straight from `strategist.js`.
+
+Consequence: made the cap guidance **volume-gated everywhere** instead of a flat ban — `decisions.js buildGrowth` now emits a "Cost cap on the scaled winner(s)" lever (`ready`, with a concrete two-governor recipe + suggested cap = CPA×1.15 under the avg-donation breakeven ceiling) whenever ≥1 ACTIVE ad set clears ~50 conv/wk, else keeps it `avoid`; `capGraduationFlags` bumps to `medium` confidence at ≥2× threshold and spells out the inflated-budget mechanic; `COMMUNITY_PLAYBOOK` BIDDING section rewritten to the two-governor / inflated-budget method (cost vs bid cap, economic ceiling, ratchet-down, duplicate-only); fixed the stale `STRATEGY_SYSTEM_PROMPT` persona and dropped the bogus "$5k/week" cap floor; `AGENTS.md` cap/VO lines updated to match.
+
+**Principle (do NOT hardcode live metrics in the AI brain).** A first pass baked this account's then-current numbers ("$350/day US ad set at 115 conv/wk", "~250-280 donations/week", "$300-400/day at $7-13 CPA") into `COMMUNITY_PLAYBOOK` + the system prompts. That rots — the account's volumes/CPAs change weekly, so a hardcoded number silently becomes a lie. Fixed: the playbook/prompts now contain ONLY metric-AGNOSTIC rules (general media-buying thresholds like "~50 conv/wk" are stable constants and stay), and they explicitly instruct the model to READ the live digest/snapshot and FETCH fresh insights before any volume-gated call (caps, Advantage+, Value Optimization). Live numbers belong in exactly two places: the runtime digest (computed fresh each analysis) and this dated journal. The code comment in `decisions.js` was also stripped of the specific observed figures.
+
 ## 2026-06-01 Advisor "absolute confidence" tool stack — deterministic compute, read-only SQL, incrementality, durable findings
 
 Overhauled the Ask-Advisor tool stack from 10 → 15 tools to make analysis *defensible* rather than recalled. Research-driven (Anthropic "writing effective tools for agents", agent SQL-safety guidance, small-sample incrementality / quasi-experiment literature):
