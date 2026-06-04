@@ -392,6 +392,11 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
   const toolSummary = (name, r) => {
     if (!r || r.ok === false) return r?.message ? `failed: ${String(r.message).slice(0, 120)}` : 'failed';
     if (name === 'get_fresh_insights') {
+      if (r.level === 'ad') {
+        const n = r.ads?.length || 0;
+        const below = (r.ads || []).filter((a) => /BELOW/.test(a.quality || '')).length;
+        return `${r.parent}: ${n} ad(s)${below ? `, ${below} below-avg quality` : ''} (${r.window})`;
+      }
       if (r.granularity === 'daily') return `${r.entity}: ${r.series?.length || 0}-day series${r.trend?.meanCpa != null ? `, mean CPA $${r.trend.meanCpa}` : ''} (${r.window})`;
       if (r.rows) return `${r.entity}: ${r.rows.length} ${r.breakdown} rows (${r.window})`;
       const t = r.totals; return t ? `${r.entity}: $${t.spend} spend, ${t.cpa != null ? 'CPA $' + t.cpa : 'no conv'} (${r.window})` : `${r.entity}: no spend (${r.window})`;

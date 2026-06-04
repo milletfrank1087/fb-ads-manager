@@ -2,7 +2,7 @@ import { fb } from './fbClient.js';
 import { config } from './env.js';
 import { log } from './logger.js';
 import { getLastAnalysis, analyzeStrategy } from './strategist.js';
-import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, setStatus as adSetStatus, setBudget as adSetBudget, duplicate as adDuplicate, BREAKDOWN_PRESETS } from './adManager.js';
+import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, setStatus as adSetStatus, setBudget as adSetBudget, duplicate as adDuplicate, setBidStrategy as adSetBidStrategy, BREAKDOWN_PRESETS } from './adManager.js';
 import { INSIGHTS_FIELDS, normalizeInsightsRow } from './insights.js';
 import { store } from './store.js';
 import * as comments from './comments.js';
@@ -33,8 +33,13 @@ const VALID_BREAKDOWNS = new Set(['none', ...Object.keys(BREAKDOWN_PRESETS)]);
 // Tier 2 = write tools. They never execute inside the chat — they build an approval PROPOSAL the
 // operator must approve. Execution happens later via executeStrategyWrite (gated by
 // FB_ALLOW_ADVISOR_WRITES + adManager's own allowAdManagement/rate guards).
-const WRITE_TOOLS = new Set(['pause_entity', 'resume_entity', 'set_budget', 'duplicate_entity', 'moderate_comment']);
+const WRITE_TOOLS = new Set(['pause_entity', 'resume_entity', 'set_budget', 'set_bid_strategy', 'duplicate_entity', 'moderate_comment']);
 const COMMENT_ACTIONS = ['reply', 'hide', 'unhide', 'delete', 'block', 'delete_and_block'];
+
+// Friendly bid-strategy names (what the model passes) -> Meta enums. Min-ROAS is omitted on purpose
+// (one-way switch). bid_cap = manual maximum-cost bidding; cost_cap = average target-cost bidding.
+const BID_STRATEGY_MAP = { cost_cap: 'COST_CAP', bid_cap: 'LOWEST_COST_WITH_BID_CAP', lowest_cost: 'LOWEST_COST_WITHOUT_CAP' };
+const BID_STRATEGY_LABEL = { COST_CAP: 'Cost Cap', LOWEST_COST_WITH_BID_CAP: 'Bid Cap', LOWEST_COST_WITHOUT_CAP: 'Lowest Cost (no cap)' };
 
 // ---------- tool schema (OpenRouter / OpenAI function-calling format) ----------
 
@@ -43,12 +48,12 @@ export const STRATEGY_TOOLS = [
     type: 'function',
     function: {
       name: 'get_fresh_insights',
-      description: 'Fetch LIVE performance metrics from Meta for the account, a campaign, or an ad set — newer than the cached snapshot. Use this whenever the operator asks about current numbers, a specific entity, or a breakdown (e.g. "how is men vs women doing this week", "Portugal\'s last-7d CPA"). Returns spend, conversions, CPA, ROAS, CPM, CTR, frequency (and per-segment rows when a breakdown is given).',
+      description: 'Fetch LIVE performance metrics from Meta for the account, a campaign, an ad set, or the ADS (creatives) under one — newer than the cached snapshot. Use whenever the operator asks about current numbers, a specific entity, a breakdown (e.g. "men vs women this week"), or CREATIVE health ("which ad is fatiguing", "why is quality low"). Returns spend, conversions, CPA, ROAS, CPM, CTR, frequency (per-segment rows for a breakdown; per-ad rows + Meta quality/engagement/conversion rankings for level="ad").',
       parameters: {
         type: 'object',
         properties: {
-          level: { type: 'string', enum: ['account', 'campaign', 'adset'], description: 'Scope of the pull. Use "account" for the whole account, otherwise name the entity.' },
-          name: { type: 'string', description: 'Substring of the campaign or ad set name to pull (case-insensitive). Map the operator\'s words to a real entity name from the snapshot — e.g. "the French campaign" -> the campaign whose name contains "France". Omit for account-level.' },
+          level: { type: 'string', enum: ['account', 'campaign', 'adset', 'ad'], description: 'Scope of the pull. "account" = whole account; "campaign"/"adset" = name the entity; "ad" = per-AD creative rows under the named campaign/adset (or top ads account-wide). Use "ad" for creative-fatigue / quality-ranking questions.' },
+          name: { type: 'string', description: 'Substring of the campaign or ad set name to pull (case-insensitive). Map the operator\'s words to a real entity name from the snapshot — e.g. "the French campaign" -> the campaign whose name contains "France". For level="ad" this is the PARENT campaign/ad set whose ads you want. Omit for account-level.' },
           window: { type: 'string', enum: ['today', 'yesterday', 'last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d'], description: 'Date window. Map natural language: "yesterday" -> yesterday, "this week" -> last_7d. Default last_7d.' },
           breakdown: { type: 'string', enum: ['none', 'age_gender', 'country', 'platform', 'placement', 'device', 'hourly'], description: 'Segment the pull. Default none (totals only).' },
           granularity: { type: 'string', enum: ['total', 'daily'], description: 'total = one summarized row (default). daily = the DAY-BY-DAY series (spend/conversions/cpa/roas per day) so you can see the trajectory, spot when a metric broke, or correlate with a change. Ignored when a breakdown is set.' },
@@ -68,10 +73,10 @@ export const STRATEGY_TOOLS = [
           op: {
             type: 'string',
             enum: ['arithmetic', 'cpa_ci', 'compare_cpa', 'pct_change', 'z_score', 'weekly_rate', 'roas', 'decision_confidence', 'summary_stats'],
-            description: 'arithmetic = evaluate a numeric expression (e.g. "50000/2.3"). cpa_ci = CPA + 95% interval from spend & conversions. compare_cpa = is group A\'s CPA really different from B/baseline (Poisson-interval test). pct_change = % change from->to. z_score = (value-mean)/sd. weekly_rate = scale a count in N days to a weekly rate. roas = value/spend. decision_confidence = tier from conversions+persistence. summary_stats = mean/median/sd of a number list.',
+            description: 'arithmetic = evaluate a numeric expression (e.g. "50000/2.3"). cpa_ci = CPA + 95% interval from spend & conversions. compare_cpa = is group A\'s CPA really different from B/baseline (Poisson-interval test). pct_change = % change from->to. z_score = (value-mean)/sd. weekly_rate = scale a count over N days to a weekly rate (for the ~50/wk cap gate). roas = value/spend. decision_confidence = tier from conversions+persistence. summary_stats = mean/median/sd of a number list.',
           },
           expression: { type: 'string', description: 'For op=arithmetic only: a numbers-and-operators expression (digits . + - * / % parentheses). No variables or functions.' },
-          args: { type: 'object', description: 'Inputs for the chosen op, e.g. {spend, conversions} for cpa_ci; {spend, conversions, baselineCpa} or {spendA,convA,spendB,convB} for compare_cpa; {from,to} for pct_change; {value,mean,sd} for z_score; {count,days} for weekly_rate; {value,spend} for roas; {conversions,persistenceDays} for decision_confidence; {values:[...]} for summary_stats.' },
+          args: { type: 'object', description: 'Inputs for the chosen op, e.g. {spend, conversions} for cpa_ci; {spend, conversions, baselineCpa} or {spendA,convA,spendB,convB} for compare_cpa; {from,to} for pct_change; {value,mean,sd} for z_score; {count,days} for weekly_rate (count alias: conversions); {value,spend} for roas; {conversions,persistenceDays} for decision_confidence; {values:[...]} for summary_stats.' },
         },
         required: ['op'],
       },
@@ -228,13 +233,33 @@ export const STRATEGY_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'set_bid_strategy',
+      description: 'PROPOSE setting the bid strategy (cost control) on an ad set or campaign — apply a COST_CAP / BID_CAP, or revert to LOWEST_COST. Propose-only; needs operator approval. CRITICAL: changing bid strategy on a LIVE/ACTIVE entity RESETS its learning phase (a significant edit) — for a proven winner do NOT edit it; instead use duplicate_entity with cost_cap to test the cap on a fresh PAUSED copy (the two-governor method). Only cap an ad set sustaining ~50+ conv/week, learning-complete, at a stable CPA (verify with get_fresh_insights + compute weekly_rate first). For this all-ABO account the cap lives on the AD SET. The daily budget must be ≥5× the cap or delivery chokes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          level: { type: 'string', enum: ['adset', 'campaign'], description: 'Usually adset for this all-ABO account.' },
+          name: { type: 'string', description: 'Substring of the ad set / campaign name.' },
+          strategy: { type: 'string', enum: ['cost_cap', 'bid_cap', 'lowest_cost'], description: 'cost_cap = average target-cost bidding (needs bid_amount). bid_cap = hard per-auction maximum (needs bid_amount, lowest volume). lowest_cost = remove the cap (no bid_amount).' },
+          bid_amount: { type: 'number', description: 'The cap in account currency units (e.g. 15 = $15), NOT cents. Required for cost_cap/bid_cap. A sane cost cap ≈ 1.1-1.2× the entity\'s current stable CPA.' },
+          reason: { type: 'string', description: 'Short why (shown on the approval card).' },
+        },
+        required: ['level', 'name', 'strategy'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'duplicate_entity',
-      description: 'PROPOSE duplicating a campaign or ad set into a PAUSED copy (the source is never touched). Propose-only; needs operator approval. Use for surf-scaling / testing a cost cap on a copy. Resolve by name substring.',
+      description: 'PROPOSE duplicating a campaign or ad set into a PAUSED copy (the source is never touched). Propose-only; needs operator approval. Use for surf-scaling OR the two-governor cost-cap test: pass cost_cap to create the copy AND cap it in one approval, leaving the winner running uncapped. Resolve by name substring.',
       parameters: {
         type: 'object',
         properties: {
           level: { type: 'string', enum: ['campaign', 'adset'], description: 'campaign or adset' },
           name: { type: 'string', description: 'Substring of the entity name to duplicate.' },
+          cost_cap: { type: 'number', description: 'Optional two-governor: apply this cap (account currency units, e.g. 15 = $15) to the new PAUSED copy. The copy gets a cap; the source stays untouched on Lowest Cost so you can A/B them. Use only when the source sustains ~50+ conv/week (verify first).' },
+          bid_strategy: { type: 'string', enum: ['cost_cap', 'bid_cap'], description: 'Which cap type to apply to the copy when cost_cap is set. Default cost_cap.' },
           reason: { type: 'string', description: 'Short why (shown on the approval card).' },
         },
         required: ['level', 'name'],
@@ -334,6 +359,47 @@ function summarizeTotals(rows, level) {
 async function getFreshInsights(args) {
   const window = VALID_WINDOWS.has(args.window) ? args.window : 'last_7d';
   const breakdown = VALID_BREAKDOWNS.has(args.breakdown) ? args.breakdown : 'none';
+
+  // Ad/creative level: per-ad rows + Meta's quality/engagement/conversion rankings in ONE call.
+  // This is the creative-fatigue lens — the advisor's previous blind spot (it asserted "Image 1 is
+  // bottom 20%" with no way to source it). Resolve the PARENT (ad set preferred, else campaign);
+  // omit name for the whole account's top ads.
+  if (args.level === 'ad') {
+    let parentId = config.primaryAccountId;
+    let parentName = 'whole account';
+    if (args.name) {
+      const ent = resolveEntity(args.name, 'adset');
+      if (!ent) return { ok: false, error: 'entity_not_found', message: `No campaign or ad set matching "${args.name}" in the snapshot. Check the name or re-analyze.` };
+      parentId = ent.id; parentName = ent.name + (ent.ambiguous ? ' (closest match)' : '');
+    }
+    const res = await fb.get(`/${parentId}/insights`, {
+      level: 'ad',
+      fields: 'ad_id,ad_name,spend,impressions,reach,frequency,cpm,ctr,inline_link_clicks,actions,action_values,quality_ranking,engagement_rate_ranking,conversion_rate_ranking',
+      date_preset: window, limit: 200,
+    }, 'GET:/strategy-tool/insights-ads');
+    if (!res.ok) return { ok: false, error: 'fetch_failed', message: res.message || 'Meta read failed.' };
+    const ads = (res.body?.data || []).map((r) => {
+      const m = normalizeInsightsRow(r, 'campaign');
+      const conv = nz(m.purchasesTotal) || nz(m.landingPageViewsTotal) || nz(m.linkClicks);
+      return {
+        ad: r.ad_name || r.ad_id,
+        spend: round(nz(m.spend)),
+        conversions: conv,
+        cpa: round(div(nz(m.spend), conv)),
+        roas: m.purchaseValueTotal ? round(div(nz(m.purchaseValueTotal), nz(m.spend))) : null,
+        cpm: round(m.cpm),
+        ctr_pct: r.ctr != null ? round(Number(r.ctr), 3) : round(div(nz(m.linkClicks), nz(m.impressions)) * 100, 3),
+        frequency: round(Number(r.frequency)),
+        quality: r.quality_ranking || null,
+        engagement: r.engagement_rate_ranking || null,
+        conversion_rank: r.conversion_rate_ranking || null,
+        impressions: nz(m.impressions),
+      };
+    }).filter((r) => r.spend > 0).sort((a, b) => b.spend - a.spend).slice(0, 20);
+    if (!ads.length) return { ok: true, level: 'ad', parent: parentName, window, ads: [], note: `No ad delivery for "${parentName}" in ${window}. Try a longer window or check the entity is active.` };
+    return { ok: true, level: 'ad', parent: parentName, window, ads, note: 'Per-ad creative performance. quality/engagement/conversion_rank are Meta percentile tiers (ABOVE_AVERAGE / AVERAGE / BELOW_AVERAGE_*). BELOW_AVERAGE quality, or rising frequency + falling CTR, = creative fatigue → refresh the creative (a cost cap cannot fix bad creative; it just stops the ad spending). "UNKNOWN" ranking = under the 500-impression threshold.' };
+  }
+
   let level = ['account', 'campaign', 'adset'].includes(args.level) ? args.level : (args.name ? 'campaign' : 'account');
 
   let targetId = config.primaryAccountId;
@@ -569,8 +635,12 @@ function computeTool(args) {
         return { ok: true, op, z, note: z == null ? 'Need value, mean, sd.' : `|z|>=2 means a real anomaly; |z|<2 is normal day-to-day noise. This z=${z}.` };
       }
       case 'weekly_rate': {
-        const count = num(a.count); const days = num(a.days);
-        if (!(days > 0)) return { ok: false, error: 'bad_days', message: 'days must be > 0.' };
+        // Accept the natural synonyms — every other compute op uses `conversions`, so the model
+        // reliably passes that here too. `count` stays canonical; `?? ` keeps a legit 0 count.
+        const count = num(a.count ?? a.conversions ?? a.events ?? a.purchases ?? a.n);
+        const days = num(a.days);
+        if (!Number.isFinite(count)) return { ok: false, error: 'bad_count', message: 'Provide args.count (alias: conversions/events/purchases) = number of events in the window.' };
+        if (!(days > 0)) return { ok: false, error: 'bad_days', message: 'Provide args.days > 0 (the window length in days).' };
         const weekly = round((count * 7) / days);
         const ci = poissonCountCI(count);
         return { ok: true, op, weekly_rate: weekly, conversions_in_window: count, days, weekly_ci95: [ci.lo != null ? round((ci.lo * 7) / days) : null, ci.hi != null ? round((ci.hi * 7) / days) : null], note: `≈${weekly}/week. Cost/Bid Cap only sane above ~50/week.` };
@@ -827,22 +897,67 @@ function proposeSetBudget(args) {
   };
 }
 
+function proposeSetBidStrategy(args) {
+  const level = args.level === 'campaign' ? 'campaign' : 'adset';
+  const metaStrat = BID_STRATEGY_MAP[(args.strategy || '').toString().toLowerCase()];
+  if (!metaStrat) return { ok: false, error: 'invalid_strategy', message: 'strategy must be cost_cap, bid_cap, or lowest_cost.' };
+  const needsCap = metaStrat === 'COST_CAP' || metaStrat === 'LOWEST_COST_WITH_BID_CAP';
+  const cap = Number(args.bid_amount);
+  if (needsCap && (!Number.isFinite(cap) || cap <= 0)) return { ok: false, error: 'invalid_bid_amount', message: `${BID_STRATEGY_LABEL[metaStrat]} needs a positive bid_amount in account currency (e.g. 15 = $15).` };
+  const r = resolveWriteTarget(level, args.name);
+  if (r.error) return { ok: false, error: r.error, message: r.message };
+  const e = r.entity;
+  const sacred = sacredHit(e.name);
+  if (sacred) return { ok: false, error: 'sacred', message: `"${e.name}" is covered by your SACRED campaign "${sacred}" — I won't change its bid strategy (it would reset learning on a protected winner). To test a cap, duplicate it and cap the COPY instead.` };
+
+  const isActive = (e.status || '').toUpperCase() === 'ACTIVE';
+  const budget = e.dailyBudget != null ? Number(e.dailyBudget) : null;
+  let warning = 'Changing bid strategy is a SIGNIFICANT EDIT — it RESETS the learning phase. ';
+  if (isActive) warning += `"${e.name}" is ACTIVE: applying this live resets its learning and can stall a working ad set. The safer play is duplicate_entity with cost_cap to test the cap on a fresh PAUSED copy. `;
+  if (needsCap && budget != null && cap * 5 > budget) warning += `Budget check: Meta needs the daily budget ≥5× the cap ($${cap} cap ⇒ ≥$${cap * 5}/day) for conversion delivery; this entity is at $${budget}/day, so it may underspend. `;
+
+  return {
+    ok: true,
+    approval: {
+      id: newApprovalId(), tool: 'set_bid_strategy', action: `Set bid strategy → ${BID_STRATEGY_LABEL[metaStrat]}`,
+      level, entityId: e.id, entityName: e.name + (r.ambiguous ? ' (closest match)' : ''),
+      current: { status: e.status || null, dailyBudget: budget },
+      change: { field: 'bid_strategy', from: e.status ? `${e.status}, current strategy` : 'current', to: needsCap ? `${BID_STRATEGY_LABEL[metaStrat]} @ $${cap}` : BID_STRATEGY_LABEL[metaStrat] },
+      risk: isActive ? 'high' : 'medium',
+      reason: (args.reason || '').toString().slice(0, 300),
+      summary: `Set ${level} "${e.name}" to ${BID_STRATEGY_LABEL[metaStrat]}${needsCap ? ` at $${cap}` : ''}`,
+      args: { level, id: e.id, name: e.name, strategy: metaStrat, bid_amount: needsCap ? cap : undefined },
+      warning,
+    },
+  };
+}
+
 function proposeDuplicate(args) {
   const level = args.level === 'adset' ? 'adset' : 'campaign';
   const r = resolveWriteTarget(level, args.name);
   if (r.error) return { ok: false, error: r.error, message: r.message };
   const e = r.entity;
+  const cap = args.cost_cap != null ? Number(args.cost_cap) : null;
+  const hasCap = Number.isFinite(cap) && cap > 0;
+  const metaStrat = BID_STRATEGY_MAP[(args.bid_strategy || 'cost_cap').toString().toLowerCase()] === 'LOWEST_COST_WITH_BID_CAP' ? 'LOWEST_COST_WITH_BID_CAP' : 'COST_CAP';
+  const capLabel = metaStrat === 'COST_CAP' ? 'Cost Cap' : 'Bid Cap';
+  const budget = e.dailyBudget != null ? Number(e.dailyBudget) : null;
+  let warning = 'Creates a PAUSED copy. The original is never modified. You turn the copy on yourself.';
+  if (hasCap) {
+    warning = `Creates a PAUSED copy and sets a ${capLabel} of $${cap} on the COPY (two-governor method). The original stays untouched on Lowest Cost — turn the copy on yourself to A/B them. `;
+    if (budget != null && cap * 5 > budget) warning += `Note: the copy inherits ~$${budget}/day; Meta needs ≥5× the cap ($${cap * 5}/day) for conversion delivery or the copy may not spend. `;
+  }
   return {
     ok: true,
     approval: {
-      id: newApprovalId(), tool: 'duplicate_entity', action: 'Duplicate (paused copy)',
+      id: newApprovalId(), tool: 'duplicate_entity', action: hasCap ? `Duplicate + ${capLabel} (paused copy)` : 'Duplicate (paused copy)',
       level, entityId: e.id, entityName: e.name + (r.ambiguous ? ' (closest match)' : ''),
-      current: { status: e.status || null }, change: { field: 'duplicate', from: e.name, to: `${e.name} - Copy (PAUSED)` },
+      current: { status: e.status || null }, change: { field: 'duplicate', from: e.name, to: hasCap ? `${e.name} - Copy (PAUSED, ${capLabel} $${cap})` : `${e.name} - Copy (PAUSED)` },
       risk: 'low',
       reason: (args.reason || '').toString().slice(0, 300),
-      summary: `Duplicate ${level} "${e.name}" into a new PAUSED copy (source untouched)`,
-      args: { level, id: e.id, name: e.name, deep_copy: true },
-      warning: 'Creates a PAUSED copy. The original is never modified. You turn the copy on yourself.',
+      summary: hasCap ? `Duplicate ${level} "${e.name}" → PAUSED copy with a $${cap} ${capLabel.toLowerCase()} (source untouched)` : `Duplicate ${level} "${e.name}" into a new PAUSED copy (source untouched)`,
+      args: { level, id: e.id, name: e.name, deep_copy: true, cost_cap: hasCap ? cap : undefined, bid_strategy: hasCap ? metaStrat : undefined },
+      warning,
     },
   };
 }
@@ -895,6 +1010,7 @@ const PROPOSERS = {
   pause_entity: (a) => proposePause(a, false),
   resume_entity: (a) => proposePause(a, true),
   set_budget: proposeSetBudget,
+  set_bid_strategy: proposeSetBidStrategy,
   duplicate_entity: proposeDuplicate,
   moderate_comment: proposeModerateComment,
 };
@@ -938,7 +1054,8 @@ export async function executeStrategyWrite(name, args = {}) {
   if (name === 'pause_entity') result = await adSetStatus({ level, id, status: 'PAUSED' });
   else if (name === 'resume_entity') result = await adSetStatus({ level, id, status: 'ACTIVE' });
   else if (name === 'set_budget') result = await adSetBudget({ level, id, dailyBudget: Math.round(Number(args.daily_budget) * 100) });
-  else if (name === 'duplicate_entity') result = await adDuplicate({ level, id, deepCopy: args.deep_copy !== false });
+  else if (name === 'set_bid_strategy') result = await adSetBidStrategy({ level, id, strategy: args.strategy, bidAmount: args.bid_amount != null ? Math.round(Number(args.bid_amount) * 100) : null });
+  else if (name === 'duplicate_entity') result = await adDuplicate({ level, id, deepCopy: args.deep_copy !== false, costCap: args.cost_cap != null ? Math.round(Number(args.cost_cap) * 100) : null, bidStrategy: args.bid_strategy || 'COST_CAP' });
   else return { ok: false, error: 'unknown_write', message: name };
 
   log.info('strategy.write.executed', { name, level, id, ok: result?.ok === true, blocked: !!result?.blocked, elapsedMs: Date.now() - t0 });

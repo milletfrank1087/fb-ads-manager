@@ -165,6 +165,66 @@ export async function setBudget({ level, id, dailyBudget, lifetimeBudget }) {
   return { ok: true, level, id, kind, value: Number(afterValue), previousValue: beforeValue };
 }
 
+// Min-ROAS is intentionally excluded: per Meta docs it is a one-way switch (you can't move an ad set
+// off LOWEST_COST_WITH_MIN_ROAS to another strategy), so we never let the advisor strand an entity on it.
+const VALID_BID_STRATEGIES = new Set(['LOWEST_COST_WITHOUT_CAP', 'COST_CAP', 'LOWEST_COST_WITH_BID_CAP']);
+
+// Set the bid strategy (cost control) on a campaign or ad set. For this all-ABO account the cap lives
+// on the AD SET (POST /{adset_id} {bid_strategy, bid_amount}); on a CBO campaign it lives on the
+// campaign. bid_amount is in MINOR UNITS (cents). CRITICAL: changing bid strategy is a SIGNIFICANT
+// EDIT that resets the learning phase on a live entity — callers must steer this onto a fresh PAUSED
+// copy (the two-governor method), never a working winner. Verified against Meta Marketing API docs +
+// Business Help Center (2026): bid-strategy change = guaranteed learning reset.
+export async function setBidStrategy({ level, id, strategy, bidAmount }) {
+  if (level !== 'campaign' && level !== 'adset') return { ok: false, error: 'invalid_level', message: 'Bid strategy can only be set on a campaign or ad set.' };
+  if (!id) return { ok: false, error: 'missing_id', message: 'Entity id is required.' };
+  const strat = (strategy || '').toString().toUpperCase();
+  if (!VALID_BID_STRATEGIES.has(strat)) {
+    return { ok: false, error: 'invalid_strategy', message: `strategy must be one of ${[...VALID_BID_STRATEGIES].join(', ')}.` };
+  }
+  const needsCap = strat === 'COST_CAP' || strat === 'LOWEST_COST_WITH_BID_CAP';
+  const data = { bid_strategy: strat };
+  let capCents = null;
+  if (needsCap) {
+    capCents = Math.round(Number(bidAmount));
+    if (!Number.isFinite(capCents) || capCents <= 0) return { ok: false, error: 'invalid_bid_amount', message: `${strat} requires a positive bid_amount in minor units (e.g. 1500 = $15).` };
+    data.bid_amount = capCents;
+  }
+
+  // Anti-suspension guard: constant bid edits flag the account, same as budgets. Cap at ~4/hour/entity.
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const recentBidEdits = store.countRecentAdActions('bid', id, oneHourAgo);
+  if (recentBidEdits >= 4) {
+    log.warn('ad.bid.rate_guard', { level, id, recentBidEdits });
+    return { ok: false, error: 'bid_rate_limit', message: `Already ${recentBidEdits} bid changes on this entity in the last hour — wait before changing again (constant bid edits flag the account).` };
+  }
+
+  const before = store.getEntity(level, id);
+  const afterLabel = needsCap ? `${strat}@${capCents}` : strat;
+  log.info('ad.bid.attempt', { level, id, strategy: strat, bidAmount: capCents, name: before?.name });
+
+  const result = await fb.manage('POST', `/${id}`, data, `POST:/${level}/bid`);
+
+  if (!result.ok) {
+    store.logAdAction({
+      action: 'bid', level, entity_id: id, entity_name: before?.name ?? null,
+      before_value: null, after_value: afterLabel,
+      payload_json: data, response_json: result.error || result,
+      success: 0, error_message: errorMessageOf(result),
+    });
+    log.warn('ad.bid.failed', { level, id, error: errorMessageOf(result), blocked: !!result.blocked });
+    return { ok: false, ...result, message: errorMessageOf(result) };
+  }
+
+  store.logAdAction({
+    action: 'bid', level, entity_id: id, entity_name: before?.name ?? null,
+    before_value: null, after_value: afterLabel,
+    payload_json: data, response_json: result.body, success: 1, error_message: null,
+  });
+  log.info('ad.bid.ok', { level, id, strategy: strat, bidAmount: capCents });
+  return { ok: true, level, id, strategy: strat, bidAmount: capCents };
+}
+
 // ---------- READ: account write-capability diagnostic ----------
 
 // Meta numeric enums (account_status / disable_reason) decoded to labels for the operator.
@@ -326,7 +386,11 @@ export async function getActivities({ id = null, limit = 100 } = {}) {
 
 // ---------- WRITE: duplicate (creates a PAUSED copy — never edits the source) ----------
 
-export async function duplicate({ level, id, deepCopy = true }) {
+// `costCap` (MINOR UNITS / cents, optional) implements the two-governor method in one approval:
+// after the PAUSED copy is created, apply a Cost/Bid cap to the COPY (never the source). The source
+// is left untouched on its existing strategy. Applying a cap to a brand-new copy resets no learning
+// (it has none yet), so this is safe by construction.
+export async function duplicate({ level, id, deepCopy = true, costCap = null, bidStrategy = 'COST_CAP' }) {
   if (level !== 'campaign' && level !== 'adset') {
     return { ok: false, error: 'invalid_level', message: 'Only campaigns or ad sets can be duplicated.' };
   }
@@ -334,7 +398,7 @@ export async function duplicate({ level, id, deepCopy = true }) {
 
   const before = store.getEntity(level, id);
   const data = { status_option: 'PAUSED', deep_copy: !!deepCopy };
-  log.info('ad.duplicate.attempt', { level, id, name: before?.name, deepCopy });
+  log.info('ad.duplicate.attempt', { level, id, name: before?.name, deepCopy, costCap });
 
   const result = await fb.manage('POST', `/${id}/copies`, data, `POST:/${level}/copies`);
 
@@ -356,7 +420,17 @@ export async function duplicate({ level, id, deepCopy = true }) {
     payload_json: data, response_json: result.body, success: 1, error_message: null,
   });
   log.info('ad.duplicate.ok', { level, id, newId });
-  return { ok: true, level, sourceId: id, newId, status: 'PAUSED' };
+
+  // Two-governor: cap the fresh copy (best-effort — the copy already exists PAUSED regardless).
+  let cap = null;
+  if (newId && costCap != null && Number(costCap) > 0) {
+    const capRes = await setBidStrategy({ level, id: newId, strategy: bidStrategy, bidAmount: costCap });
+    cap = capRes.ok
+      ? { applied: true, strategy: capRes.strategy, bidAmount: capRes.bidAmount }
+      : { applied: false, error: capRes.message || 'cap failed' };
+    log.info('ad.duplicate.cap', { newId, ok: capRes.ok, error: capRes.ok ? null : capRes.message });
+  }
+  return { ok: true, level, sourceId: id, newId, status: 'PAUSED', cap };
 }
 
 export function adMgmtState() {

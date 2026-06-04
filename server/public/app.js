@@ -1258,6 +1258,7 @@ function dashboard() {
       if (hint) label += ` · ${hint}`;
       if (args && args.breakdown && args.breakdown !== 'none') label += ` (${args.breakdown})`;
       if (args && args.granularity === 'daily') label += ' (daily)';
+      if (name === 'get_fresh_insights' && args && args.level === 'ad') label += ' (ads)';
       return label;
     },
     toolIcon(name) {

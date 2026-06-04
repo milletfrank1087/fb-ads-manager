@@ -11,6 +11,22 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-06-04 `compute weekly_rate` silently returned null — param-name mismatch + silent-NaN anti-pattern
+
+The advisor's `compute(op:weekly_rate, args:{conversions:156, days:30})` showed `≈ null/week` in chat. Root cause: the op read ONLY `a.count`, but the model passed `conversions` (every OTHER compute op — `cpa_ci`/`compare_cpa`/`decision_confidence` — uses `conversions`, so the model generalised). `num(undefined)→NaN`; `round(NaN)→null`; the `days>0` guard passed (30>0) so it never errored → a fabricated "null/week" surfaced as if it were a real answer.
+
+Fix: `weekly_rate` now accepts `count ?? conversions ?? events ?? purchases ?? n` (the `??` preserves a legit `0`) AND **fails loudly** (`ok:false, error:'bad_count'`) when no count is present, so the model retries instead of reporting null. Verified: `{conversions:156,days:30}`→36.4/wk, `{count:115,days:7}`→115, missing-count→error, `{count:0}`→0; live advisor now prints "36.4/week (95% CI 30.9–42.6)".
+
+Lesson (general): a calculator op must NEVER return a silent `null` on bad input — either alias the synonym the model actually sends or error loudly. A silent null becomes a confident hallucination downstream (here the model fell back to a stale 30-day snapshot figure and first gave wrong cap advice).
+
+## 2026-06-04 Built the executable two-governor cap + ad-level creative tools (closing the advisor's last capability gaps)
+
+The advisor could *recommend* a cost cap but not *set* one (no bid-strategy write), and asserted creative-quality claims ("Image 1 is bottom-20%") it could not source (insights stopped at ad-set level). Built both, research-grounded:
+
+- **Bid strategy / cost cap writes.** Confirmed via Meta Marketing API docs: for an all-ABO account the cap lives on the **ad set** (`POST /{adset_id} {bid_strategy, bid_amount}`, cents); `bid_amount` required for `COST_CAP`/`LOWEST_COST_WITH_BID_CAP`; conversion delivery needs **daily budget ≥5× the cap**; `LOWEST_COST_WITH_MIN_ROAS` is a one-way switch (excluded). Confirmed via Meta Help Center + 5+ practitioner sources (Jon Loomer, adlibrary 2026, etc.): **changing bid strategy ALWAYS resets the learning phase** → universal remedy is "duplicate and cap the copy". So: new `set_bid_strategy` write (ACTIVE target = `risk:high` + learning-reset warning that steers to duplicate; `sacredHit`-guarded; ~4 bid-edits/hr/entity rate guard) AND `duplicate_entity` gained `cost_cap`/`bid_strategy` params = the **two-governor method in one approval** (creates PAUSED copy, caps the COPY, leaves the winner uncapped — safe by construction, no learning reset on the winner).
+- **Ad-level creative insights.** `get_fresh_insights(level:'ad')` → one `/{parent}/insights?level=ad` call returning per-ad rows + Meta `quality_ranking`/`engagement_rate_ranking`/`conversion_rate_ranking` + frequency. Verified live: the advisor now reads real rankings (Bottom 20%/35%/Unknown) and correctly separates a structural creative problem (low quality + low frequency) from fatigue (rising frequency + falling CTR) — sourced, not guessed.
+- **Tool-count discipline held:** 15→16 tools. Creative is a `level`, not a new tool; the cap is folded into `duplicate_entity`; `set_bid_strategy` is the one net-new write (justified: executable half of the flagship strategy). All three verified end-to-end as safe proposals (zero live mutation): ad read HTTP 200 in ~1.1s, two-governor proposal `risk:low`, direct bid-strategy proposal `risk:high` with the learning warning.
+
 ## 2026-06-04 The empty-body 403 is a PROXY/egress rejection, not Meta (supersedes the 2026-06-01 "edge anti-abuse / app-tier" theory)
 
 Re-diagnosed the `HTTP 403 with an empty body` failure with live evidence. The 2026-06-01 entry guessed "Meta edge anti-abuse / app-tier write restriction" off a SINGLE write data point + a misleading hardcoded error string. That was WRONG. Operator confirmed budget writes succeed, and the 403 now also appears on **reads** — so it's neither a write-tier block nor a permission/account/rate-limit issue.
