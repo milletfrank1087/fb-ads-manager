@@ -180,10 +180,10 @@ const DISABLE_REASON_LABELS = {
 };
 
 // Pure read (GET — allowed even in FB_READONLY). Answers "can this token actually write to this
-// account, and is the account healthy?" — the decisive disambiguation for an edge 403 on writes:
-// a missing MANAGE/ADVERTISE task or a non-ACTIVE/disabled account explains write rejections;
-// if tasks include MANAGE/ADVERTISE AND the account is ACTIVE/NONE, the 403 points to app-tier /
-// edge anti-abuse instead.
+// account, and is the account healthy?" — rules account/permission causes in or out for a 403.
+// NOTE: an empty-body 403 returned in ~tens of ms is NOT a Meta rejection at all — it's the
+// proxy/egress layer refusing the request before it reaches Meta (see fbClient http_error branch);
+// that is unrelated to account health or token tasks, which this probe confirms are fine.
 export async function getAccountCapability() {
   const acct = config.primaryAccountId;
   const res = await fb.get(`/${acct}`, {

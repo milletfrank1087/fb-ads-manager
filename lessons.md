@@ -11,6 +11,21 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-06-04 The empty-body 403 is a PROXY/egress rejection, not Meta (supersedes the 2026-06-01 "edge anti-abuse / app-tier" theory)
+
+Re-diagnosed the `HTTP 403 with an empty body` failure with live evidence. The 2026-06-01 entry guessed "Meta edge anti-abuse / app-tier write restriction" off a SINGLE write data point + a misleading hardcoded error string. That was WRONG. Operator confirmed budget writes succeed, and the 403 now also appears on **reads** — so it's neither a write-tier block nor a permission/account/rate-limit issue.
+
+Decisive evidence:
+- **Railway logs:** `GET:/act/account`, `POST:/batch/strategy`, `GET:/strategy-tool/insights` all returned `status=403 bodySnippet=(empty)` in **18-33 ms** — interspersed with successes (e.g. `POST:/batch/strategy http=200 elapsedMs=4977` 13 s later). Intermittent, not constant.
+- **Timing is the smoking gun:** a real Graph call through the proxy round-trips in ~600-5000 ms (measured). A 20 ms response **cannot have reached Meta** (Meta is ~800 ms away via this proxy) — it was rejected at the proxy/egress hop BEFORE Meta. Meta's own errors also always carry a JSON `{error:{...}}` envelope (→ `fb.api_error`); an EMPTY body is never Meta-application-layer.
+- **Home vs Railway, identical creds:** Railway env uses the EXACT same `PROXY_HOST=155.103.142.153:12323`, same proxy user/pass length, same `FB_SYSTEM_USER_ACCESS_TOKEN` (len 204). From a home IP I ran **39/39 successful** raw Graph reads (24 sequential + 15 parallel) at ~800 ms each, zero failures. Railway fails intermittently. 39 straight home successes makes a probabilistic Meta-side block on the shared egress IP statistically impossible (0.8^39 ≈ 0.02%).
+- **Egress IP is fixed** (`155.103.142.153`, AS19793 **Linivo LLC**, US datacenter) — verified stable across 6 `proxy_check.py` runs, so it's not a rotating-pool artifact.
+- **Conclusion:** the proxy provider intermittently REFUSES requests originating from Railway's cloud/datacenter egress (fast empty 403) while passing residential/home traffic — classic residential-proxy anti-cloud / source-authorisation behaviour. Root cause is the **proxy ⇄ Railway egress**, not Meta, not the app, not the account, not rate limits.
+
+Fixes applied: rewrote the `fbClient.js` empty-body branch — it no longer claims "Meta's edge / app-tier write restriction / reads still succeed" (all false); it now reports the status + **elapsedMs**, flags sub-100 ms empty bodies as a proxy/egress rejection ("usually succeeds on retry; not a rate limit/permission/account issue"), and captures `via`/`server` response headers in `fb.http_error` to tell proxy-vs-Meta apart next time. Updated the stale `adManager.getAccountCapability` comment.
+
+Open recommendations (NOT yet implemented — need operator decision): (1) add a single bounded retry on a fast empty-body 403 (it's transient — would mask most of these from the UI); this is a different class from the AGENTS.md "no blind retries on 429" rule, which is about rate limits with JSON envelopes. (2) Proxy-side: ask the provider whether they allowlist source IPs / block cloud sources / cap per-source RPS, give Railway a **static outbound IP** and allowlist it, or move to a plan that authorises the Railway egress. (3) The `/api/ads/capability` probe + tier note remain useful but are NOT the cause here.
+
 ## 2026-06-04 Live account read corrects the "never caps / sub-50 / sub-€2k" playbook assumption
 
 Ran two bounded, proxied reads through the running server (`POST /api/strategy/analyze`, windows `last_7d` + `last_30d`; ~13 batched ops each, well under the 500/day cap; READONLY mode, kill switch released) to ground the bidding playbook in reality instead of the old "this is a tiny account" guess.

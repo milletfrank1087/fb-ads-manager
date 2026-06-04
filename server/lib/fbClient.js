@@ -24,6 +24,12 @@ const http = axios.create({
 let lastCallAt = 0;
 let callCounter = 0;
 
+// A non-2xx with an EMPTY body returned faster than a real Meta round-trip (~600ms+) is a
+// proxy/egress refusal that never reached Meta — see the http_error branch. Because the request
+// provably did NOT reach Meta, retrying is safe even for writes (no double-apply risk). Bounded.
+const PROXY_REJECT_MAX_MS = 400;
+const PROXY_REJECT_MAX_RETRIES = 2;
+
 function appSecretProof(token) {
   return crypto.createHmac('sha256', config.appSecret).update(token).digest('hex');
 }
@@ -166,16 +172,38 @@ async function rawRequest(method, relativePath, { params, data, endpointKey, saf
     reqConfig.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
   }
 
-  const t0 = Date.now();
   let response;
-  try {
-    response = await http.request(reqConfig);
-  } catch (err) {
-    log.error('fb.transport_error', { endpoint: ep, error: String(err.message || err) });
-    safety.recordError(ep, { message: String(err.message || err) });
-    return { ok: false, transportError: true, error: String(err.message || err) };
+  let elapsedMs = 0;
+  let attempt = 0;
+  for (;;) {
+    const t0 = Date.now();
+    try {
+      response = await http.request(reqConfig);
+    } catch (err) {
+      log.error('fb.transport_error', { endpoint: ep, error: String(err.message || err), attempt });
+      safety.recordError(ep, { message: String(err.message || err) });
+      return { ok: false, transportError: true, error: String(err.message || err) };
+    }
+    elapsedMs = Date.now() - t0;
+
+    const st = response.status;
+    const b = response.data;
+    const emptyBody = b == null || (typeof b === 'string' && b.trim() === '');
+    const metaEnvelope = b && typeof b === 'object' && b.error;
+    const proxyReject = (st < 200 || st >= 300) && emptyBody && !metaEnvelope && elapsedMs < PROXY_REJECT_MAX_MS;
+    if (proxyReject && attempt < PROXY_REJECT_MAX_RETRIES) {
+      attempt += 1;
+      const backoffMs = 300 * attempt + Math.floor(Math.random() * 150);
+      log.warn('fb.proxy_retry', { endpoint: ep, status: st, elapsedMs, attempt, backoffMs });
+      safety.recordCall();
+      await new Promise((r) => setTimeout(r, backoffMs));
+      continue;
+    }
+    if (attempt > 0 && st >= 200 && st < 300) {
+      log.info('fb.proxy_retry.recovered', { endpoint: ep, attempt });
+    }
+    break;
   }
-  const elapsedMs = Date.now() - t0;
 
   const { sample, bucInfo, appMaxPct } = captureUsage(method, ep, response);
   lastUsageHint = {
@@ -218,15 +246,23 @@ async function rawRequest(method, relativePath, { params, data, endpointKey, saf
     if (typeof body === 'string') rawBody = body;
     else if (body != null) { try { rawBody = JSON.stringify(body); } catch { rawBody = String(body); } }
     const snippet = rawBody.slice(0, 300);
-    // A non-2xx with an EMPTY body is the signature of a rejection at Meta's edge / anti-abuse
-    // layer: it never reached the Graph application layer, which always returns a JSON
-    // {error:{...}} envelope (that path is handled above as fb.api_error). Surface a usable
-    // message so the audit log + UI don't just show "unknown_error".
+    // A non-2xx with an EMPTY body that returns FAST (sub-~100ms) is the signature of a rejection at
+    // the PROXY / egress layer, NOT Meta: a real Graph call round-trips in ~600-5000ms through the
+    // proxy, and Meta's own errors always return a JSON {error:{...}} envelope (handled above as
+    // fb.api_error). An empty body + tiny elapsedMs = the proxy refused the request before it ever
+    // reached Meta (transient egress-IP refusal / source not authorised), which is intermittent and
+    // usually succeeds on retry. Capture the hop-identifying headers so we can tell proxy vs Meta.
+    const hdrs = response.headers || {};
+    const viaHdr = hdrs.via || hdrs.Via || null;
+    const srvHdr = hdrs.server || hdrs.Server || null;
+    const fastEmpty = !snippet && elapsedMs < 100;
     const message = snippet
-      ? `Meta returned HTTP ${response.status}: ${snippet}`
-      : `Meta returned HTTP ${response.status} with an empty body — rejected at Meta's edge (anti-abuse / IP reputation / app-tier write restriction), not a Graph business error. Reads from the same token/IP still succeed.`;
+      ? `Graph HTTP ${response.status}: ${snippet}`
+      : fastEmpty
+        ? `HTTP ${response.status} with an empty body in ${elapsedMs}ms — rejected at the PROXY/egress layer before reaching Meta (a real Graph call round-trips in ~600ms+ and Meta errors carry a JSON body). Likely a transient proxy/egress-IP refusal; usually succeeds on retry. Not a rate limit, permission, or account issue.`
+        : `HTTP ${response.status} with an empty body in ${elapsedMs}ms (no Graph error envelope). Edge/proxy rejection rather than a Graph business error.`;
     safety.recordError(ep, { httpStatus: response.status, message: `HTTP ${response.status}` });
-    log.error('fb.http_error', { endpoint: ep, status: response.status, elapsedMs, bodySnippet: snippet || '(empty)' });
+    log.error('fb.http_error', { endpoint: ep, status: response.status, elapsedMs, bodySnippet: snippet || '(empty)', via: viaHdr, server: srvHdr });
     return { ok: false, httpStatus: response.status, status: response.status, body, error: { httpStatus: response.status, message }, message };
   }
 
