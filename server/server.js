@@ -403,6 +403,10 @@ app.post('/api/strategy/chat', ah(async (req, res) => {
     }
     if (name === 'get_change_history') return `${r.scope}: ${r.count} recent change(s)`;
     if (name === 'get_ad_preview') return `${r.adName} (${r.status}) — ${r.format}`;
+    if (name === 'get_audiences') {
+      if (r.scope === 'targeting') return r.targeting ? `${r.adset}: ${r.targeting.audience_type}${Array.isArray(r.targeting.countries) ? ` · ${r.targeting.countries.join(',')}` : ''} · ${r.targeting.age}` : `${r.adset}: no targeting`;
+      return `${r.count} audience(s) · ${r.lookalikes?.length || 0} lookalike(s)`;
+    }
     if (name === 're_analyze') return `re-analyzed ${r.window}: ${r.counts?.activeCampaigns ?? '?'} active campaigns`;
     if (name === 'get_comments') {
       if (r.scope === 'summary') return `${r.summary?.total ?? 0} comments · ${r.summary?.needs_reply ?? 0} need reply · ${r.summary?.flagged ?? 0} flagged`;

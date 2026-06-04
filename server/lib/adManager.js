@@ -384,6 +384,51 @@ export async function getActivities({ id = null, limit = 100 } = {}) {
   return { ok: true, id, rows };
 }
 
+// ---------- READ: audiences & targeting (grounds lookalike/scaling advice) ----------
+
+// Audience size: Meta is retiring `approximate_count` for lower/upper bounds, and new/inactive
+// lookalikes return -1 (no size). Render an honest label rather than a misleading number.
+function audienceSizeLabel(lo, hi) {
+  const l = Number(lo); const h = Number(hi);
+  if (l === -1 || h === -1) return 'n/a (inactive/new)';
+  if (!Number.isFinite(l) && !Number.isFinite(h)) return null;
+  if (Number.isFinite(l) && Number.isFinite(h)) return l === h ? String(l) : `${l.toLocaleString()}–${h.toLocaleString()}`;
+  return String(Number.isFinite(l) ? l : h);
+}
+
+export async function listCustomAudiences({ limit = 200 } = {}) {
+  const acct = config.primaryAccountId;
+  const res = await fb.get(`/${acct}/customaudiences`, {
+    fields: 'id,name,subtype,approximate_count_lower_bound,approximate_count_upper_bound,lookalike_spec,retention_days,operation_status,delivery_status,time_updated,description',
+    limit: Math.max(1, Math.min(500, limit)),
+  }, 'GET:/account/customaudiences');
+  if (!res.ok) return { ok: false, ...res, message: errorMessageOf(res) };
+
+  const audiences = (res.body?.data || []).map((a) => {
+    const spec = a.lookalike_spec || null;
+    const origin = Array.isArray(spec?.origin) && spec.origin.length ? (spec.origin[0].name || spec.origin[0].id) : null;
+    const country = spec ? (spec.country || (Array.isArray(spec?.location_spec?.geo_locations?.countries) ? spec.location_spec.geo_locations.countries.join(',') : null)) : null;
+    return {
+      id: a.id,
+      name: a.name || null,
+      subtype: a.subtype || null,
+      size: audienceSizeLabel(a.approximate_count_lower_bound, a.approximate_count_upper_bound),
+      lookalike: spec ? { ratio: spec.ratio != null ? Number(spec.ratio) : null, country, origin } : null,
+      retentionDays: a.retention_days ?? null,
+      status: a.operation_status?.description || a.operation_status?.code || a.delivery_status?.description || null,
+      updated: a.time_updated || null,
+    };
+  });
+  return { ok: true, accountId: acct, audiences };
+}
+
+export async function getAdSetTargeting({ id }) {
+  if (!id) return { ok: false, error: 'missing_id', message: 'Ad set id is required.' };
+  const res = await fb.get(`/${id}`, { fields: 'name,targeting' }, 'GET:/adset/targeting');
+  if (!res.ok) return { ok: false, ...res, message: errorMessageOf(res) };
+  return { ok: true, id, name: res.body?.name || null, targeting: res.body?.targeting || null };
+}
+
 // ---------- WRITE: duplicate (creates a PAUSED copy — never edits the source) ----------
 
 // `costCap` (MINOR UNITS / cents, optional) implements the two-governor method in one approval:

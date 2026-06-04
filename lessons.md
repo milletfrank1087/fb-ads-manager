@@ -11,6 +11,17 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-06-04 Added `get_audiences` — grounds lookalike/scaling advice in audiences that ACTUALLY exist (anti-hallucination)
+
+The advisor was inventing audience structure. In a live chat it confidently described an "LLA 1% ad set with $11.33 CPA" inside the USA campaign and advised "duplicate the 1% into a 2% and 3% lookalike" — none of which it could verify. New read tool `get_audiences(scope, name?)` closes that gap:
+
+- `scope:'list'` → `GET /act_x/customaudiences` (`adManager.listCustomAudiences`): name, subtype, size, and for lookalikes the seed + ratio + country.
+- `scope:'targeting'` → `GET /{adset}?fields=targeting` (`adManager.getAdSetTargeting`): one ad set's real targeting, with `custom_audiences`/`excluded_custom_audiences` ids cross-mapped to names via the catalog, an `audience_type` archetype (broad|interest|custom/retargeting|lookalike), geo/age/genders/interests, and `advantage_audience`.
+
+Field gotchas confirmed live: audience size uses `approximate_count_lower_bound`/`upper_bound` (the bare `approximate_count` is retired); a `-1` bound = Meta hasn't sized it → render "n/a (inactive/new)". Targeting specs return custom audiences as bare `{id}` (no name) → must cross-map against the audiences list. `lookalike_spec` returns `ratio`+`origin` reliably but `country` can be null on older LLAs (kept nullable).
+
+Live verification (proxied, read-only, HTTP 200): the account actually has just **2 audiences** — one `Lookalike (1%)` seeded from "GFM Improved" + one `WEBSITE` CA `PUR180` — and the `($350/day) US - Broad` ad set is **broad** (US, 18-65, all genders) with **`advantage_audience:1`** (Advantage+ expansion ON), NO lookalike attached. So the earlier "duplicate the USA 1% LLA" advice was un-actionable; with this tool the advisor confirms the seed/lookalike exists before proposing a ratio scale-out, else tells the operator to build the seed first. Tool count 16→17 (11 read/analysis + 6 write).
+
 ## 2026-06-04 `compute weekly_rate` silently returned null — param-name mismatch + silent-NaN anti-pattern
 
 The advisor's `compute(op:weekly_rate, args:{conversions:156, days:30})` showed `≈ null/week` in chat. Root cause: the op read ONLY `a.count`, but the model passed `conversions` (every OTHER compute op — `cpa_ci`/`compare_cpa`/`decision_confidence` — uses `conversions`, so the model generalised). `num(undefined)→NaN`; `round(NaN)→null`; the `days>0` guard passed (30>0) so it never errored → a fabricated "null/week" surfaced as if it were a real answer.

@@ -2,7 +2,7 @@ import { fb } from './fbClient.js';
 import { config } from './env.js';
 import { log } from './logger.js';
 import { getLastAnalysis, analyzeStrategy } from './strategist.js';
-import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, setStatus as adSetStatus, setBudget as adSetBudget, duplicate as adDuplicate, setBidStrategy as adSetBidStrategy, BREAKDOWN_PRESETS } from './adManager.js';
+import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, setStatus as adSetStatus, setBudget as adSetBudget, duplicate as adDuplicate, setBidStrategy as adSetBidStrategy, listCustomAudiences as adListCustomAudiences, getAdSetTargeting as adGetAdSetTargeting, BREAKDOWN_PRESETS } from './adManager.js';
 import { INSIGHTS_FIELDS, normalizeInsightsRow } from './insights.js';
 import { store } from './store.js';
 import * as comments from './comments.js';
@@ -176,6 +176,20 @@ export const STRATEGY_TOOLS = [
         type: 'object',
         properties: {
           window: { type: 'string', enum: ['last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d'], description: 'Window to analyze. Default last_30d.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_audiences',
+      description: 'Inspect the account\'s AUDIENCES and an ad set\'s TARGETING — grounds lookalike/scaling and broad-vs-interest advice with what actually exists, instead of guessing. scope="list" returns the saved Custom + Lookalike audiences (name, type, size, and for lookalikes the seed + ratio + country). scope="targeting" returns one ad set\'s real targeting (geo, age, genders, interests, the custom/lookalike audiences it includes/excludes resolved to names, and whether Advantage+ audience expansion is on). Use before proposing "duplicate the 1% into a 2-3% lookalike" — confirm those audiences exist first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', enum: ['list', 'targeting'], description: 'list = all saved custom/lookalike audiences on the account. targeting = the targeting config of one ad set (requires name).' },
+          name: { type: 'string', description: 'Required for scope="targeting": substring of the AD SET name whose targeting to inspect (case-insensitive).' },
         },
       },
     },
@@ -585,6 +599,98 @@ function getCommentsTool(args) {
   };
 }
 
+// ---------- audiences & targeting (read; grounds lookalike/scaling advice) ----------
+
+// Map a list of targeting custom-audience refs ({id} or {id,name}) to names/types using the
+// account audience catalog (targeting specs usually return ONLY ids).
+function resolveAudienceRefs(refs, catalog) {
+  if (!Array.isArray(refs) || !refs.length) return null;
+  return refs.map((r) => {
+    const id = r.id || r;
+    const hit = catalog.get(String(id));
+    return { id: String(id), name: r.name || hit?.name || null, type: hit?.subtype || null };
+  });
+}
+
+function shapeTargeting(t, catalog) {
+  const geo = t.geo_locations || {};
+  const exGeo = t.excluded_geo_locations || {};
+  const genders = Array.isArray(t.genders) && t.genders.length
+    ? t.genders.map((g) => (Number(g) === 1 ? 'men' : Number(g) === 2 ? 'women' : String(g))).join(', ')
+    : 'all';
+  const interests = [];
+  if (Array.isArray(t.flexible_spec)) {
+    for (const fs of t.flexible_spec) {
+      if (Array.isArray(fs.interests)) for (const i of fs.interests) interests.push(i.name || i.id);
+      if (Array.isArray(fs.behaviors)) for (const b of fs.behaviors) interests.push(b.name || b.id);
+    }
+  }
+  if (Array.isArray(t.interests)) for (const i of t.interests) interests.push(i.name || i.id);
+  const included = resolveAudienceRefs(t.custom_audiences, catalog);
+  const excluded = resolveAudienceRefs(t.excluded_custom_audiences, catalog);
+  const advRaw = t.targeting_automation?.advantage_audience;
+  const advantageAudience = advRaw === 1 || advRaw === '1' || advRaw === true;
+  // Derive the audience archetype so the model grounds broad-vs-LLA-vs-interest advice.
+  let type = 'broad';
+  if (included && included.some((a) => a.type === 'lookalike')) type = 'lookalike';
+  else if (included && included.length) type = 'custom/retargeting';
+  else if (interests.length) type = 'interest';
+  return {
+    audience_type: type,
+    countries: geo.countries || null,
+    regions: Array.isArray(geo.regions) ? geo.regions.map((r) => r.name || r.key) : null,
+    cities: Array.isArray(geo.cities) ? geo.cities.map((c) => c.name || c.key) : null,
+    excluded_countries: exGeo.countries || null,
+    age: `${t.age_min ?? '?'}-${t.age_max ?? '?'}`,
+    genders,
+    interests: interests.length ? interests.slice(0, 25) : null,
+    custom_audiences: included,
+    excluded_custom_audiences: excluded,
+    locales: Array.isArray(t.locales) && t.locales.length ? t.locales : null,
+    advantage_audience: advantageAudience,
+    platforms: Array.isArray(t.publisher_platforms) ? t.publisher_platforms : null,
+  };
+}
+
+async function getAudiencesTool(args) {
+  const scope = ['list', 'targeting'].includes(args.scope) ? args.scope : 'list';
+
+  if (scope === 'targeting') {
+    if (!args.name) return { ok: false, error: 'missing_name', message: 'Provide a substring of the AD SET name to inspect its targeting.' };
+    const ent = resolveEntity(args.name, 'adset');
+    if (!ent) return { ok: false, error: 'entity_not_found', message: `No ad set matching "${args.name}" in the snapshot. Check the name or re-analyze.` };
+    if (ent.level !== 'adset') return { ok: false, error: 'wrong_level', message: `"${ent.name}" is a campaign — targeting lives on ad sets. Name an ad set within it.` };
+    const res = await adGetAdSetTargeting({ id: ent.id });
+    if (!res.ok) return { ok: false, error: 'fetch_failed', message: res.message || 'Could not read targeting.' };
+    if (!res.targeting) return { ok: true, scope, adset: res.name || ent.name, targeting: null, note: 'Meta returned no targeting spec for this ad set.' };
+    // Targeting specs return custom audiences as bare {id}; pull the catalog to resolve names/types.
+    const catalog = new Map();
+    const hasCa = Array.isArray(res.targeting.custom_audiences) || Array.isArray(res.targeting.excluded_custom_audiences);
+    if (hasCa) {
+      const list = await adListCustomAudiences({ limit: 500 });
+      if (list.ok) for (const a of list.audiences) catalog.set(String(a.id), a);
+    }
+    return {
+      ok: true, scope, adset: res.name || ent.name,
+      targeting: shapeTargeting(res.targeting, catalog),
+      note: 'audience_type tells you the archetype. For scaling a broad/interest winner, "list" to find or seed a lookalike; lookalikes that exist can be duplicated into adjacent ratios. advantage_audience=true means Meta is already expanding beyond the defined audience.',
+    };
+  }
+
+  const res = await adListCustomAudiences({ limit: 500 });
+  if (!res.ok) return { ok: false, error: 'fetch_failed', message: res.message || 'Could not list audiences.' };
+  const auds = res.audiences || [];
+  const lookalikes = auds.filter((a) => a.subtype === 'LOOKALIKE');
+  const customs = auds.filter((a) => a.subtype !== 'LOOKALIKE');
+  return {
+    ok: true, scope,
+    count: auds.length,
+    lookalikes: lookalikes.map((a) => ({ name: a.name, size: a.size, ratio: a.lookalike?.ratio != null ? `${round(a.lookalike.ratio * 100, 1)}%` : null, country: a.lookalike?.country, seed: a.lookalike?.origin, status: a.status })),
+    custom_audiences: customs.map((a) => ({ name: a.name, subtype: a.subtype, size: a.size, retention_days: a.retentionDays, status: a.status })),
+    note: 'These are the audiences that EXIST. Only recommend duplicating into a lookalike ratio (e.g. 2-3%) if a seed/lookalike here supports it; otherwise advise creating the seed first. size "n/a (inactive/new)" = Meta hasn\'t sized it yet (audience may need rebuilding before use).',
+  };
+}
+
 // ---------- compute: deterministic stats & arithmetic (no I/O, no arbitrary code) ----------
 
 // Safe arithmetic: the regex guarantees ONLY digits and math operators — no identifiers are possible,
@@ -794,6 +900,7 @@ const EXECUTORS = {
   get_fresh_insights: getFreshInsights,
   get_change_history: getChangeHistory,
   get_ad_preview: getAdPreviewTool,
+  get_audiences: getAudiencesTool,
   re_analyze: reAnalyze,
   get_comments: getCommentsTool,
   compute: computeTool,
