@@ -195,6 +195,10 @@ export async function analyzeStrategy({ window = 'last_30d' } = {}) {
       campaignName: campName.get(meta.campaign_id || r.campaign_id) || null,
       status: meta.effective_status || meta.status || null,
       optimizationGoal: meta.optimization_goal || null,
+      optimizationEvent: meta.promoted_object?.custom_event_type || null,
+      bidStrategy: meta.bid_strategy || null,
+      bidAmount: nz(Number(meta.bid_amount)) > 0 ? Number(meta.bid_amount) / 100 : null,
+      learningStage: meta.learning_stage_info?.status || null,
       dailyBudget, lifetimeBudget,
       frequency: round(div(m.impressions, m.reach)),
       ...derive(agg),
@@ -284,9 +288,9 @@ export async function analyzeStrategy({ window = 'last_30d' } = {}) {
     if (c.frequency != null && c.frequency > 3 && c.spend >= 20) {
       actions.push({
         severity: 'medium', sev: 45, scope: 'campaign', entityId: c.id, entityName: c.name,
-        strategy: 'creative_refresh', type: 'fatigue',
-        title: `Fatigue risk: ${c.name} (frequency ${c.frequency})`,
-        detail: `Average frequency is ${c.frequency} (>3 = the same people are seeing it repeatedly).${trend.ctrDeclining ? ' Account CTR is also trending down.' : ''} Refresh the creative or widen the audience before CPA climbs.`,
+        strategy: 'scale_horizontal', type: 'fatigue',
+        title: `Audience fatigue: ${c.name} (frequency ${c.frequency})`,
+        detail: `Average frequency is ${c.frequency} (>3 = the same people are seeing it repeatedly).${trend.ctrDeclining ? ' Account CTR is also trending down.' : ''} Creative is fixed on this account, so widen/rotate the AUDIENCE: duplicate the winner into a fresh lookalike or a new geo, or broaden targeting — before CPA climbs.`,
         evidence: { frequency: c.frequency, ctrDeclining: trend.ctrDeclining },
       });
     }

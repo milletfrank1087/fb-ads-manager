@@ -11,6 +11,22 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-06-04 Full advisor re-evaluation → an account-specific OPERATING MANDATE (the brain was advising against reality)
+
+Pulled a complete live picture of `act_1622353565055773` (20 proxied read-only calls: account, 26 campaigns, 58 ad sets w/ full targeting+optimization+`learning_stage_info`, 80 ads, 3 insight windows, all 10 pixels + their `event_source` split, custom conversions, audiences). Three findings showed the advisor's generic brain was actively WRONG for this account:
+
+- **CAPI was assumed missing — it's LIVE.** Active pixel "GFM Improved" (1533961664530010) fires ~52% SERVER / 48% browser (26,274 events/7d). The advisor had been telling the operator "I can't confirm CAPI / you're blind 20-30%" — a guess with no tool to check. Evidence: `GET /{pixel}/stats?aggregation=event_source`.
+- **Only ONE creative is live** ("Image 1", DONATE_NOW) shared across all 3 active ad sets — and the operator runs it that way BY CHOICE and does not test creative. The advisor's #1 reflex ("refresh the creative") was a dead recommendation.
+- **The live account is one $475/day USA campaign** (`GBM Emily - USA`, ABO, Lowest Cost), 3 ad sets: $350 (learn SUCCESS, 115 conv/wk), $75 (learn FAIL, 35/wk), $50 LLA-1% (LEARNING, 5/wk). 25 other campaigns paused. The snapshot used a 50-event HEURISTIC for learning, not Meta's real `learning_stage_info.status`.
+
+Operator answers set the objective function: maximize **ROAS-efficient scale, no budget ceiling**, judged vs the account's OWN baseline (no hardcoded numbers); levers = **structure/budget/audience/geo/bid only**; **creative off-limits**; CAPI **trusted**; geo = **pure ROI**.
+
+Consequence — redesigned the brain:
+- New `ACCOUNT_MANDATE` block injected into all 3 prompts (chat/strategy/briefing) + re-stated at end of chat context (centrifugation). Surgically neutralized the playbook's creative-lever + "CAPI essential/fix it" lines. Dropped `creative_refresh`/`fix_tracking` from the weekly-plan enum; the strategist's frequency-fatigue signal now emits `scale_horizontal` (widen audience), not creative.
+- Added `learning_stage_info` + `promoted_object` to `ADSET_ENTITY_FIELDS`; the snapshot + chat context now carry real `learningStage` (SUCCESS/FAIL/LEARNING) + `optimizationEvent` + `bidStrategy`.
+- New `get_signal(days?)` tool (`adManager.getPixelSignal`) returns the server/browser split so the advisor PROVES tracking instead of guessing.
+- Persisted the mandate to `advisor_profile` (`riskTolerance`/`notes`) so `buildAdvisorMemory` re-injects it. Lesson: a generic media-buyer playbook can confidently advise AGAINST an account's reality (creative it won't change, tracking that's already solved) — ground the brain in a per-account mandate + real entity config, not just KPIs. Tool count 17→18.
+
 ## 2026-06-04 Added `get_audiences` — grounds lookalike/scaling advice in audiences that ACTUALLY exist (anti-hallucination)
 
 The advisor was inventing audience structure. In a live chat it confidently described an "LLA 1% ad set with $11.33 CPA" inside the USA campaign and advised "duplicate the 1% into a 2% and 3% lookalike" — none of which it could verify. New read tool `get_audiences(scope, name?)` closes that gap:

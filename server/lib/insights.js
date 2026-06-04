@@ -45,6 +45,8 @@ export const ADSET_ENTITY_FIELDS = [
   'bid_amount',
   'daily_budget',
   'lifetime_budget',
+  'learning_stage_info',
+  'promoted_object',
   'targeting{geo_locations,age_min,age_max,genders,custom_audiences}',
   'start_time',
   'end_time',

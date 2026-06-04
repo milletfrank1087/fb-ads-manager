@@ -429,6 +429,44 @@ export async function getAdSetTargeting({ id }) {
   return { ok: true, id, name: res.body?.name || null, targeting: res.body?.targeting || null };
 }
 
+// Pixel/CAPI health: SERVER vs BROWSER event split for recently-active pixels. A meaningful SERVER
+// share means the Conversions API is live (not pixel-only). Bounds work to the few pixels that
+// actually fired recently so it stays cheap.
+export async function getPixelSignal({ days = 7, maxPixels = 4 } = {}) {
+  const acct = config.primaryAccountId;
+  const px = await fb.get(`/${acct}/adspixels`, { fields: 'id,name,last_fired_time,is_unavailable' }, 'GET:/account/adspixels');
+  if (!px.ok) return { ok: false, ...px, message: errorMessageOf(px) };
+  const now = Date.now();
+  const recent = (px.body?.data || [])
+    .filter((p) => p.last_fired_time && (now - new Date(p.last_fired_time).getTime()) < 21 * 86400 * 1000)
+    .sort((a, b) => new Date(b.last_fired_time) - new Date(a.last_fired_time))
+    .slice(0, Math.max(1, maxPixels));
+  const start = Math.floor(now / 1000) - days * 86400;
+  const pixels = [];
+  for (const p of recent) {
+    const st = await fb.get(`/${p.id}/stats`, { aggregation: 'event_source', start_time: start }, 'GET:/pixel/stats');
+    let server = 0; let browser = 0;
+    if (st.ok) {
+      for (const bucket of (st.body?.data || [])) {
+        for (const d of (bucket.data || [])) {
+          const v = String(d.value || '').toUpperCase();
+          const n = Number(d.count) || 0;
+          if (v === 'SERVER') server += n;
+          else if (v === 'BROWSER' || v === 'WEBSITE') browser += n;
+        }
+      }
+    }
+    const total = server + browser;
+    pixels.push({
+      id: p.id, name: p.name || null, lastFired: p.last_fired_time,
+      server, browser, total,
+      serverPct: total > 0 ? Math.round((server / total) * 100) : null,
+      capiActive: total > 0 ? server > 0 : null,
+    });
+  }
+  return { ok: true, accountId: acct, days, pixels };
+}
+
 // ---------- WRITE: duplicate (creates a PAUSED copy — never edits the source) ----------
 
 // `costCap` (MINOR UNITS / cents, optional) implements the two-governor method in one approval:

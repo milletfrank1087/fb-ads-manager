@@ -2,7 +2,7 @@ import { fb } from './fbClient.js';
 import { config } from './env.js';
 import { log } from './logger.js';
 import { getLastAnalysis, analyzeStrategy } from './strategist.js';
-import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, setStatus as adSetStatus, setBudget as adSetBudget, duplicate as adDuplicate, setBidStrategy as adSetBidStrategy, listCustomAudiences as adListCustomAudiences, getAdSetTargeting as adGetAdSetTargeting, BREAKDOWN_PRESETS } from './adManager.js';
+import { getBreakdowns as adGetBreakdowns, getActivities as adGetActivities, getAdPreview as adGetPreview, setStatus as adSetStatus, setBudget as adSetBudget, duplicate as adDuplicate, setBidStrategy as adSetBidStrategy, listCustomAudiences as adListCustomAudiences, getAdSetTargeting as adGetAdSetTargeting, getPixelSignal as adGetPixelSignal, BREAKDOWN_PRESETS } from './adManager.js';
 import { INSIGHTS_FIELDS, normalizeInsightsRow } from './insights.js';
 import { store } from './store.js';
 import * as comments from './comments.js';
@@ -164,6 +164,19 @@ export const STRATEGY_TOOLS = [
           format: { type: 'string', enum: ['DESKTOP_FEED_STANDARD', 'MOBILE_FEED_STANDARD', 'INSTAGRAM_STANDARD', 'FACEBOOK_STORY_MOBILE'], description: 'Preview format. Default MOBILE_FEED_STANDARD.' },
         },
         required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_signal',
+      description: 'Check tracking / CAPI health: the SERVER vs BROWSER event split for the account\'s recently-active pixel(s) over the last few days. A meaningful SERVER share means the Conversions API is live (not pixel-only), so the donation counts/values are trustworthy. Use this to PROVE data quality before any "are these numbers real / is CAPI working" claim — never guess about tracking.',
+      parameters: {
+        type: 'object',
+        properties: {
+          days: { type: 'integer', description: 'Lookback window in days for the event split (default 7, max 28).' },
+        },
       },
     },
   },
@@ -520,6 +533,25 @@ async function getAdPreviewTool(args) {
     campaign: ad.campaign?.name || null, adset: ad.adset?.name || null,
     format, iframe: prev.iframe,
     note: 'The creative preview is now shown inline to the operator. You cannot see the image; describe what to check (hook, first 3s, offer clarity) and ask the operator what it shows if needed.',
+  };
+}
+
+async function getSignalTool(args) {
+  const days = Math.max(1, Math.min(28, Number(args.days) || 7));
+  const res = await adGetPixelSignal({ days });
+  if (!res.ok) return { ok: false, error: 'fetch_failed', message: res.message || 'Could not read pixel signal.' };
+  const pixels = (res.pixels || []).map((p) => ({
+    pixel: p.name, last_fired: p.lastFired,
+    events: p.total, server: p.server, browser: p.browser,
+    server_pct: p.serverPct, capi_active: p.capiActive,
+  }));
+  const anyCapi = pixels.some((p) => p.capi_active && (p.server_pct || 0) >= 5);
+  return {
+    ok: true, days, pixels,
+    capi_live: anyCapi,
+    note: anyCapi
+      ? 'CAPI is LIVE (a recently-active pixel is sending SERVER events). Treat the donation counts/values as trustworthy — do NOT recommend tracking fixes.'
+      : 'No meaningful SERVER events detected on recently-active pixels in this window — CAPI may be off or quiet. Confirm before relying on a data-quality claim.',
   };
 }
 
@@ -901,6 +933,7 @@ const EXECUTORS = {
   get_change_history: getChangeHistory,
   get_ad_preview: getAdPreviewTool,
   get_audiences: getAudiencesTool,
+  get_signal: getSignalTool,
   re_analyze: reAnalyze,
   get_comments: getCommentsTool,
   compute: computeTool,
