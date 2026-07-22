@@ -19,6 +19,7 @@ function commentsManager() {
     moderationEnabled: false,
     analyzerEnabled: false,
     killSwitch: false,
+    cmAutoEnabled: false,
 
     summary: {},
     posts: [],
@@ -46,8 +47,10 @@ function commentsManager() {
 
     audit: [],
     blocked: [],
+    runs: [],
+    expandedRunId: null,
 
-    busy: { sync: false, syncComments: false, analyze: false, inbox: false, action: false, suggest: false },
+    busy: { sync: false, syncComments: false, analyze: false, inbox: false, action: false, suggest: false, autoRun: false },
     toast: { show: false, type: 'info', title: '', message: '' },
     showNamesNote: true,
     lastSyncedAt: null,
@@ -109,6 +112,7 @@ function commentsManager() {
         this.moderationEnabled = data.moderationEnabled;
         this.analyzerEnabled = data.analyzerEnabled;
         this.killSwitch = data.killSwitch;
+        this.cmAutoEnabled = !!data.cmAutoEnabled;
         this.summary = data.summary || {};
         this.posts = data.posts || [];
         this.rules = data.rules || [];
@@ -482,6 +486,83 @@ function commentsManager() {
       if (!data.ok) { this.toastError('Unblock failed', this.errMsg(status, data)); return; }
       this.blocked = data.blocked || [];
       this.toastInfo('User unblocked', '');
+    },
+
+    // ---------- activity (auto-runs) ----------
+
+    async loadRuns() {
+      const { data } = await this.api('/api/cm/runs?limit=50');
+      if (data.ok) {
+        this.runs = data.runs || [];
+        this.cmAutoEnabled = !!data.cmAutoEnabled;
+      }
+    },
+
+    async loadRunDetail(id) {
+      const { data } = await this.api(`/api/cm/runs/${id}`);
+      if (!data.ok) return null;
+      const idx = this.runs.findIndex((r) => r.id === id);
+      if (idx !== -1) this.runs[idx] = data.run;
+      return data.run;
+    },
+
+    toggleRunExpand(id) {
+      if (this.expandedRunId === id) {
+        this.expandedRunId = null;
+        return;
+      }
+      this.expandedRunId = id;
+      const run = this.runs.find((r) => r.id === id);
+      if (run && !run.actions) this.loadRunDetail(id);
+    },
+
+    async runAutoNow() {
+      if (!this.cmAutoEnabled || this.busy.autoRun || this.killSwitch) return;
+      if (!this.moderationEnabled) {
+        this.toastError('Auto-run blocked', 'Comment moderation must be enabled (FB_ALLOW_COMMENT_MODERATION=1).');
+        return;
+      }
+      if (!confirm('Run the automated pipeline now?\n\nRefresh ads → sync active posts → AI review → delete AI-flagged comments (recommended_action=delete only).')) return;
+      this.busy.autoRun = true;
+      try {
+        const { status, data } = await this.api('/api/cm/auto-run/manual', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (!data.ok) {
+          this.toastError('Auto-run failed', this.errMsg(status, data));
+          return;
+        }
+        const r = data.run || {};
+        this.toastInfo(
+          'Auto-run complete',
+          `${r.comments_deleted || 0} deleted · ${r.comments_analyzed || 0} analyzed · ${r.posts_active || 0} active posts`,
+        );
+        if (data.summary) this.summary = data.summary;
+        await this.loadState();
+        await this.loadRuns();
+        if (this.tab === 'inbox') await this.reload();
+      } catch (e) {
+        this.toastError('Auto-run error', String(e));
+      } finally {
+        this.busy.autoRun = false;
+      }
+    },
+
+    goActivity() {
+      this.tab = 'activity';
+      this.loadRuns();
+    },
+
+    runStatusClass(status) {
+      if (status === 'success') return 'bg-green-50 text-green-700 border-green-200';
+      if (status === 'partial') return 'bg-yellow-50 text-yellow-700 border-yellow-200';
+      if (status === 'error') return 'bg-red-50 text-red-700 border-red-200';
+      if (status === 'running') return 'bg-blue-50 text-blue-700 border-blue-200';
+      return 'bg-gray-50 text-meta-gray-600 border-gray-200';
+    },
+
+    runTriggerLabel(trigger) {
+      return trigger === 'manual' ? 'Manual' : 'Scheduled';
     },
 
     // ---------- pagination ----------

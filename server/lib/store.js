@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
-import { ROOT } from './env.js';
+import { ROOT, config } from './env.js';
 import { log } from './logger.js';
 
 const DATA_DIR = path.join(ROOT, 'data');
@@ -351,6 +351,44 @@ CREATE TABLE IF NOT EXISTS findings (
 );
 CREATE INDEX IF NOT EXISTS idx_findings_created ON findings(created_at);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
+
+CREATE TABLE IF NOT EXISTS cm_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trigger TEXT NOT NULL DEFAULT 'scheduled',
+  status TEXT NOT NULL DEFAULT 'running',
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT,
+  elapsed_ms INTEGER,
+  posts_active INTEGER DEFAULT 0,
+  posts_synced INTEGER DEFAULT 0,
+  comments_fetched INTEGER DEFAULT 0,
+  comments_analyzed INTEGER DEFAULT 0,
+  comments_deleted INTEGER DEFAULT 0,
+  comments_delete_failed INTEGER DEFAULT 0,
+  comments_skipped INTEGER DEFAULT 0,
+  auto_hidden INTEGER DEFAULT 0,
+  http_calls INTEGER DEFAULT 0,
+  error_message TEXT,
+  summary_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cm_runs_started ON cm_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_cm_runs_status ON cm_runs(status);
+
+CREATE TABLE IF NOT EXISTS cm_run_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  comment_id TEXT,
+  post_id TEXT,
+  campaign_name TEXT,
+  category TEXT,
+  severity INTEGER,
+  message_preview TEXT,
+  success INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cm_run_actions_run ON cm_run_actions(run_id);
 `;
 
 db.exec(SCHEMA);
@@ -1524,5 +1562,132 @@ export const store = {
   setFindingStatus(id, status) {
     if (!['open', 'watching', 'resolved', 'dismissed'].includes(status)) return 0;
     return db.prepare('UPDATE findings SET status = ? WHERE id = ?').run(status, id).changes;
+  },
+
+  // ---------- Comments Manager: automated runs ----------
+
+  getActiveAdPosts() {
+    const prefix = config.targetPageId ? `${config.targetPageId}_` : null;
+    return this.getPostCatalog().filter((p) => {
+      if (prefix && !String(p.id).startsWith(prefix)) return false;
+      return String(p.effective_status || '').toUpperCase() === 'ACTIVE';
+    });
+  },
+
+  getRunningCmRun(maxAgeMinutes = 45) {
+    return db.prepare(`
+      SELECT * FROM cm_runs
+      WHERE status = 'running'
+        AND datetime(started_at) > datetime('now', ?)
+      ORDER BY id DESC LIMIT 1
+    `).get(`-${Math.max(5, maxAgeMinutes)} minutes`) ?? null;
+  },
+
+  startCmRun(trigger = 'scheduled') {
+    const info = db.prepare(`
+      INSERT INTO cm_runs (trigger, status, started_at)
+      VALUES (?, 'running', datetime('now'))
+    `).run(trigger);
+    return info.lastInsertRowid;
+  },
+
+  finishCmRun(id, patch = {}) {
+    const row = db.prepare('SELECT * FROM cm_runs WHERE id = ?').get(id);
+    if (!row) return null;
+    const status = patch.status || row.status || 'success';
+    const summaryJson = patch.summary != null ? JSON.stringify(patch.summary).slice(0, 8000) : row.summary_json;
+    db.prepare(`
+      UPDATE cm_runs SET
+        status = ?,
+        finished_at = datetime('now'),
+        elapsed_ms = ?,
+        posts_active = ?,
+        posts_synced = ?,
+        comments_fetched = ?,
+        comments_analyzed = ?,
+        comments_deleted = ?,
+        comments_delete_failed = ?,
+        comments_skipped = ?,
+        auto_hidden = ?,
+        http_calls = ?,
+        error_message = ?,
+        summary_json = ?
+      WHERE id = ?
+    `).run(
+      status,
+      patch.elapsedMs ?? null,
+      patch.postsActive ?? row.posts_active ?? 0,
+      patch.postsSynced ?? row.posts_synced ?? 0,
+      patch.commentsFetched ?? row.comments_fetched ?? 0,
+      patch.commentsAnalyzed ?? row.comments_analyzed ?? 0,
+      patch.commentsDeleted ?? row.comments_deleted ?? 0,
+      patch.commentsDeleteFailed ?? row.comments_delete_failed ?? 0,
+      patch.commentsSkipped ?? row.comments_skipped ?? 0,
+      patch.autoHidden ?? row.auto_hidden ?? 0,
+      patch.httpCalls ?? row.http_calls ?? 0,
+      patch.errorMessage != null ? String(patch.errorMessage).slice(0, 1000) : row.error_message,
+      summaryJson,
+      id,
+    );
+    return this.getCmRun(id);
+  },
+
+  listCmRuns(limit = 50) {
+    db.prepare(`
+      INSERT INTO cm_run_actions (run_id, action, comment_id, post_id, campaign_name, category, severity, message_preview, success, error_message)
+      VALUES (@run_id, @action, @comment_id, @post_id, @campaign_name, @category, @severity, @message_preview, @success, @error_message)
+    `).run({
+      run_id: runId,
+      action: entry.action,
+      comment_id: entry.commentId ?? null,
+      post_id: entry.postId ?? null,
+      campaign_name: entry.campaignName ?? null,
+      category: entry.category ?? null,
+      severity: entry.severity ?? null,
+      message_preview: entry.messagePreview ? String(entry.messagePreview).slice(0, 200) : null,
+      success: entry.success ? 1 : 0,
+      error_message: entry.errorMessage ? String(entry.errorMessage).slice(0, 300) : null,
+    });
+  },
+
+  getCmRun(id) {
+    const run = db.prepare('SELECT * FROM cm_runs WHERE id = ?').get(id);
+    if (!run) return null;
+    const actions = db.prepare('SELECT * FROM cm_run_actions WHERE run_id = ? ORDER BY id ASC').all(id);
+    let summary = null;
+    if (run.summary_json) {
+      try { summary = JSON.parse(run.summary_json); } catch { summary = null; }
+    }
+    return { ...run, summary, actions };
+  },
+
+  listCmRuns(limit = 50) {
+    const lim = Math.min(200, Math.max(1, Number(limit) || 50));
+    const runs = db.prepare('SELECT * FROM cm_runs ORDER BY id DESC LIMIT ?').all(lim);
+    return runs.map((run) => {
+      let summary = null;
+      if (run.summary_json) {
+        try { summary = JSON.parse(run.summary_json); } catch { summary = null; }
+      }
+      return { ...run, summary };
+    });
+  },
+
+  getSuggestDeleteComments({ postIds = [], limit = 20 } = {}) {
+    if (!postIds.length) return [];
+    const lim = Math.max(1, Math.min(100, Number(limit) || 20));
+    const placeholders = postIds.map(() => '?').join(',');
+    return db.prepare(`
+      SELECT c.id, c.post_id, c.message, p.campaign_name,
+             a.category, a.severity, a.recommended_action
+      FROM comments c
+      JOIN comment_analyses a ON a.comment_id = c.id
+      LEFT JOIN ad_posts p ON p.id = c.post_id
+      WHERE c.deleted = 0 AND c.is_hidden = 0
+        AND a.recommended_action = 'delete'
+        AND c.post_id IN (${placeholders})
+      ORDER BY a.severity DESC, c.created_time DESC
+      LIMIT ${lim}
+    `).all(...postIds);
   },
 };

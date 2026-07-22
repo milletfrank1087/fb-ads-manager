@@ -96,7 +96,11 @@ export const config = Object.freeze({
   // kept lower by default because each sub-op can return up to 100 comments.
   cmBatchSize: Math.max(1, Math.min(50, intOpt('CM_BATCH_SIZE', 25))),
 
-  userAgent: 'fb-ads-manager/0.8 (+node-express; +sync; +comments; +batch; +admgmt)',
+  cmAutoEnabled: boolOpt('CM_AUTO_ENABLED', false),
+  cmAutoSecret: opt('CM_AUTO_SECRET', ''),
+  cmAutoMaxDeletesPerRun: Math.max(1, Math.min(100, intOpt('CM_AUTO_MAX_DELETES_PER_RUN', 20))),
+
+  userAgent: 'fb-ads-manager/0.8 (+node-express; +sync; +comments; +batch; +admgmt; +cm-auto)',
 });
 
 export function maskToken(s) {

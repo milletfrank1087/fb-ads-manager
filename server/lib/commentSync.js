@@ -410,15 +410,20 @@ export async function syncAll({ analyze = true, applyRules = true } = {}) {
  * faster than syncAll — use it for "just get me new comments and review them".
  * Reuses the same batched 2-pass fetch + the same persistence/reconcile path.
  */
-export async function syncCommentsOnly({ analyze = true, applyRules = true } = {}) {
-  const startedAt = Date.now();
-  log.info('cm.sync_comments.start', { analyze, applyRules });
-  store.markSyncStarted();
-
+export async function syncCommentsOnly({ analyze = true, applyRules = true, activeOnly = false } = {}) {
   const prefix = config.targetPageId ? `${config.targetPageId}_` : null;
-  const posts = store.getPostCatalog()
-    .filter((p) => !prefix || String(p.id).startsWith(prefix))
-    .slice(0, config.cmMaxPostsPerSync);
+  let posts = store.getPostCatalog()
+    .filter((p) => !prefix || String(p.id).startsWith(prefix));
+  if (activeOnly) {
+    posts = posts.filter((p) => String(p.effective_status || '').toUpperCase() === 'ACTIVE');
+  }
+  posts = posts.slice(0, config.cmMaxPostsPerSync);
+  return syncPostsComments(posts, { analyze, applyRules });
+}
+
+export async function syncPostsComments(posts, { analyze = true, applyRules = true, analyzePosts = null } = {}) {
+  const startedAt = Date.now();
+  log.info('cm.sync_comments.start', { analyze, applyRules, posts: posts.length });
 
   if (!posts.length) {
     const elapsedMs = Date.now() - startedAt;
@@ -429,6 +434,8 @@ export async function syncCommentsOnly({ analyze = true, applyRules = true } = {
       analyzerEnabled: analyzerEnabled(), elapsedMs,
     };
   }
+
+  store.markSyncStarted();
 
   const commentFields = `comments.filter(stream).order(chronological).limit(${FIRST_PAGE_LIMIT}){${COMMENT_FIELDS}}`;
   const acc = new Map();
@@ -509,13 +516,15 @@ export async function syncCommentsOnly({ analyze = true, applyRules = true } = {
     for (const p of posts) autoHidden += (await applyAutoHideRules(p.id)).applied || 0;
   }
 
-  // ---- AI review ----
   let analyzed = 0;
   let analysisFailed = 0;
   if (analyze && analyzerEnabled()) {
-    const a = await analyzeAllPending({ force: false });
-    analyzed = a.analyzed;
-    analysisFailed = a.failed;
+    const targets = analyzePosts || posts;
+    for (const p of targets) {
+      const a = await analyzeCommentsForPost(p, { force: false });
+      analyzed += a.analyzed || 0;
+      analysisFailed += a.failed || 0;
+    }
   }
 
   const elapsedMs = Date.now() - startedAt;

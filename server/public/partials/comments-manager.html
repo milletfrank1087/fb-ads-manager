@@ -77,6 +77,9 @@
                   title="Keyword/pattern rules that auto-HIDE matching comments on each sync. Rules never delete — deletion always needs your confirmation.">
             Auto-rules<span class="ml-1 text-meta-gray-600 font-normal" x-text="'('+rules.length+')'"></span>
           </button>
+          <button @click="goActivity()" class="level-tab" :class="tab==='activity'?'active':''"
+                  title="Automated moderation runs — scheduled twice daily (08:00 & 20:00 Kiev). Shows sync, review, and delete actions.">
+            Activity</button>
           <button @click="tab='audit'; loadAudit()" class="level-tab" :class="tab==='audit'?'active':''"
                   title="Append-only trail of every moderation action — successful, failed, or blocked-by-gate.">Audit log</button>
           <button @click="tab='blocked'; loadBlocked()" class="level-tab" :class="tab==='blocked'?'active':''"
@@ -527,6 +530,81 @@
                     <tr x-show="!rules.length"><td colspan="6" class="px-3 py-6 text-center text-meta-gray-600 text-sm">No rules yet.</td></tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- ===== ACTIVITY TAB ===== -->
+          <div x-show="tab==='activity'" class="flex-1 overflow-y-auto scrollbar-thin p-5">
+            <div class="max-w-3xl mx-auto space-y-4">
+              <div class="bg-white border border-gray-200 rounded-lg p-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-bold">Automated moderation</div>
+                    <div class="text-xs text-meta-gray-600 mt-1">
+                      Runs at <b>08:00</b> and <b>20:00</b> (Europe/Kiev) when enabled.
+                      Pipeline: refresh ads → discover posts → sync <b>active</b> campaigns → AI review → delete comments where AI recommends <code class="font-mono text-[11px]">delete</code> only.
+                    </div>
+                  </div>
+                  <button @click="runAutoNow()"
+                          :disabled="!cmAutoEnabled || busy.autoRun || killSwitch || !moderationEnabled"
+                          class="px-3 py-1.5 bg-meta-blue text-white text-xs font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0">
+                    <svg x-show="busy.autoRun" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <span x-text="busy.autoRun ? 'Running…' : 'Run now'"></span>
+                  </button>
+                </div>
+                <div x-show="!cmAutoEnabled" class="mt-3 text-xs text-yellow-800 bg-yellow-50 border border-yellow-200 rounded-md px-3 py-2">
+                  Auto-moderation is <b>off</b>. Set <code class="font-mono">CM_AUTO_ENABLED=1</code> and <code class="font-mono">CM_AUTO_SECRET</code> in env, then configure Railway cron to <code class="font-mono">POST /api/cm/auto-run</code> with the secret header.
+                </div>
+              </div>
+
+              <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                <div class="px-4 py-2 border-b border-gray-100 flex items-center justify-between">
+                  <span class="text-sm font-bold">Run timeline</span>
+                  <button @click="loadRuns()" class="text-xs text-meta-blue hover:underline">Refresh</button>
+                </div>
+                <div class="divide-y divide-gray-100">
+                  <template x-for="run in runs" :key="'run-'+run.id">
+                    <div class="px-4 py-3">
+                      <button @click="toggleRunExpand(run.id)" class="w-full text-left">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span class="text-xs font-mono text-meta-gray-500" x-text="timeAgo(run.started_at) || run.started_at || '—'"></span>
+                          <span class="text-[10px] px-1.5 py-0.5 rounded border font-medium" :class="runStatusClass(run.status)" x-text="run.status"></span>
+                          <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-meta-gray-600" x-text="runTriggerLabel(run.trigger)"></span>
+                          <span class="text-xs text-meta-gray-600" x-show="run.elapsed_ms" x-text="(run.elapsed_ms/1000).toFixed(1)+'s'"></span>
+                        </div>
+                        <div class="mt-1.5 text-xs text-meta-gray-700 flex flex-wrap gap-x-3 gap-y-1">
+                          <span><b x-text="run.posts_active||0"></b> active posts</span>
+                          <span><b x-text="run.comments_fetched||0"></b> comments synced</span>
+                          <span><b x-text="run.comments_analyzed||0"></b> analyzed</span>
+                          <span class="text-red-700" x-show="(run.comments_deleted||0)>0"><b x-text="run.comments_deleted"></b> deleted</span>
+                          <span class="text-orange-700" x-show="(run.comments_delete_failed||0)>0"><b x-text="run.comments_delete_failed"></b> delete failed</span>
+                          <span x-show="(run.auto_hidden||0)>0"><b x-text="run.auto_hidden"></b> auto-hidden</span>
+                        </div>
+                        <div x-show="run.error_message" class="mt-1 text-[11px] text-red-700" x-text="run.error_message"></div>
+                      </button>
+                      <div x-show="expandedRunId===run.id" class="mt-3 pl-2 border-l-2 border-gray-200 space-y-2">
+                        <template x-if="run.summary && run.summary.activeCampaigns && run.summary.activeCampaigns.length">
+                          <div class="text-[11px] text-meta-gray-600">Campaigns: <span x-text="run.summary.activeCampaigns.join(', ')"></span></div>
+                        </template>
+                        <template x-for="act in (run.actions||[])" :key="'act-'+act.id">
+                          <div class="text-xs rounded-md px-2 py-1.5" :class="act.success ? 'bg-green-50' : 'bg-red-50'">
+                            <div class="flex items-center gap-2">
+                              <span class="font-semibold" x-text="act.action"></span>
+                              <span x-show="act.category" class="text-[10px] px-1 rounded bg-white/80" x-text="act.category"></span>
+                              <span x-show="act.severity!=null" class="text-[10px] text-meta-gray-600" x-text="'sev '+act.severity"></span>
+                              <span class="ml-auto text-[10px]" :class="act.success?'text-green-700':'text-red-700'" x-text="act.success?'ok':(act.error_message||'failed')"></span>
+                            </div>
+                            <div class="text-meta-gray-700 mt-0.5 break-words" x-text="act.message_preview || act.comment_id"></div>
+                            <div class="text-[10px] text-meta-gray-500 mt-0.5" x-show="act.campaign_name" x-text="act.campaign_name"></div>
+                          </div>
+                        </template>
+                        <div x-show="!(run.actions||[]).length" class="text-xs text-meta-gray-500">No per-comment actions recorded for this run.</div>
+                      </div>
+                    </div>
+                  </template>
+                  <div x-show="!runs.length" class="px-4 py-8 text-center text-meta-gray-600 text-sm">No automated runs yet. Enable auto-moderation or click <b>Run now</b>.</div>
+                </div>
               </div>
             </div>
           </div>

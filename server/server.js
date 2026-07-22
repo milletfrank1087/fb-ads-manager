@@ -21,6 +21,7 @@ import {
   analyzeCommentsForPost as cmAnalyzePost,
   analyzeAllPending as cmAnalyzeAll,
 } from './lib/commentSync.js';
+import { runCmAuto, cmAutoSecretOk } from './lib/autoRun.js';
 import { refreshDashboard, refreshLevel, refreshAllLevels, buildDashboardPayload } from './lib/refresh.js';
 import {
   setStatus as adSetStatus,
@@ -634,6 +635,7 @@ app.get('/api/cm/state', (_req, res) => {
     lastSyncedAt: store.getLastCommentSyncAt(),
     reviewSince: store.getReviewSince(),
     newSinceLastSync: store.getNewSinceLastSync(),
+    cmAutoEnabled: config.cmAutoEnabled,
   });
 });
 
@@ -680,6 +682,43 @@ app.post('/api/cm/sync-comments', ah(async (req, res) => {
 app.post('/api/cm/discover', ah(async (_req, res) => {
   const result = await cmDiscoverPosts({ withMeta: true });
   res.json({ ok: true, ...result, posts: store.getPostCatalog() });
+}));
+
+app.get('/api/cm/runs', (req, res) => {
+  const limit = parseInt(req.query.limit, 10) || 50;
+  const runs = store.listCmRuns(limit);
+  res.json({ ok: true, runs, cmAutoEnabled: config.cmAutoEnabled });
+});
+
+app.get('/api/cm/runs/:id', (req, res) => {
+  const run = store.getCmRun(parseInt(req.params.id, 10));
+  if (!run) return res.status(404).json({ ok: false, error: 'run_not_found' });
+  res.json({ ok: true, run });
+});
+
+app.post('/api/cm/auto-run', ah(async (req, res) => {
+  if (!config.cmAutoEnabled) {
+    return res.status(423).json({ ok: false, error: 'auto_disabled', message: 'Set CM_AUTO_ENABLED=1 to enable automated comment moderation.' });
+  }
+  if (!cmAutoSecretOk(req)) {
+    return res.status(401).json({ ok: false, error: 'unauthorized', message: 'Invalid or missing CM_AUTO_SECRET.' });
+  }
+  log.info('cm.auto.request', { trigger: 'scheduled' });
+  const result = await runCmAuto({ trigger: 'scheduled' });
+  if (!result.ok && result.error === 'run_in_progress') return res.status(409).json(result);
+  if (!result.ok) return res.status(500).json(result);
+  res.json(result);
+}));
+
+app.post('/api/cm/auto-run/manual', ah(async (req, res) => {
+  if (!config.cmAutoEnabled) {
+    return res.status(423).json({ ok: false, error: 'auto_disabled', message: 'Set CM_AUTO_ENABLED=1 to enable automated comment moderation.' });
+  }
+  log.warn('cm.auto.request', { trigger: 'manual' });
+  const result = await runCmAuto({ trigger: 'manual' });
+  if (!result.ok && result.error === 'run_in_progress') return res.status(409).json(result);
+  if (!result.ok) return res.status(500).json(result);
+  res.json(result);
 }));
 
 app.post('/api/cm/posts/:postId/refresh', ah(async (req, res) => {
