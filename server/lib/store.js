@@ -1684,7 +1684,7 @@ export const store = {
       JOIN comment_analyses a ON a.comment_id = c.id
       LEFT JOIN ad_posts p ON p.id = c.post_id
       WHERE c.deleted = 0 AND c.is_hidden = 0
-        AND a.recommended_action = 'delete'
+        AND a.recommended_action IN ('delete', 'review')
         AND c.post_id IN (${placeholders})
       ORDER BY a.severity DESC, c.created_time DESC
       LIMIT ${lim}
