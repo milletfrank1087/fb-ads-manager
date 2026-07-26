@@ -132,7 +132,7 @@ export async function runCmAuto({ trigger = 'scheduled' } = {}) {
   let httpCalls = 0;
 
   try {
-    const refresh = await refreshAllLevels({ datePreset: 'today', onlyHadDelivery: false });
+    const refresh = await refreshAllLevels({ datePreset: 'last_7d', onlyHadDelivery: false });
     httpCalls += refresh.httpCalls || 0;
     if (!refresh.ok) notes.push(`refresh_failed:${refresh.error || 'unknown'}`);
 

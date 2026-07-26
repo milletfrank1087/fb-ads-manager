@@ -1632,7 +1632,7 @@ export const store = {
     return this.getCmRun(id);
   },
 
-  listCmRuns(limit = 50) {
+  logCmRunAction(runId, entry) {
     db.prepare(`
       INSERT INTO cm_run_actions (run_id, action, comment_id, post_id, campaign_name, category, severity, message_preview, success, error_message)
       VALUES (@run_id, @action, @comment_id, @post_id, @campaign_name, @category, @severity, @message_preview, @success, @error_message)
