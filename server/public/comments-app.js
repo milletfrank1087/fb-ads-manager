@@ -20,6 +20,7 @@ function commentsManager() {
     analyzerEnabled: false,
     killSwitch: false,
     cmAutoEnabled: false,
+    scheduler: null,
 
     summary: {},
     posts: [],
@@ -113,6 +114,7 @@ function commentsManager() {
         this.analyzerEnabled = data.analyzerEnabled;
         this.killSwitch = data.killSwitch;
         this.cmAutoEnabled = !!data.cmAutoEnabled;
+        this.scheduler = data.scheduler || null;
         this.summary = data.summary || {};
         this.posts = data.posts || [];
         this.rules = data.rules || [];
@@ -495,6 +497,10 @@ function commentsManager() {
       if (data.ok) {
         this.runs = data.runs || [];
         this.cmAutoEnabled = !!data.cmAutoEnabled;
+        this.scheduler = data.scheduler || null;
+        if (this.runs.length && !this.runs[0].actions) {
+          this.loadRunDetail(this.runs[0].id);
+        }
       }
     },
 
@@ -619,12 +625,24 @@ function commentsManager() {
       if (!iso) return '—';
       const t = new Date(iso.includes('T') || iso.includes('Z') ? iso : iso.replace(' ', 'T') + 'Z').getTime();
       if (Number.isNaN(t)) return '—';
-      const delta = Math.max(0, Math.floor((Date.now() - t) / 1000));
+      const delta = Math.floor((Date.now() - t) / 1000);
+      if (delta < 0) return this.timeUntil(iso);
       if (delta < 5) return 'just now';
       if (delta < 60) return delta + 's ago';
       if (delta < 3600) return Math.floor(delta / 60) + 'm ago';
       if (delta < 86400) return Math.floor(delta / 3600) + 'h ago';
       return Math.floor(delta / 86400) + 'd ago';
+    },
+    timeUntil(iso) {
+      if (!iso) return '—';
+      const t = new Date(iso).getTime();
+      if (Number.isNaN(t)) return '—';
+      const delta = Math.max(0, Math.floor((t - Date.now()) / 1000));
+      if (delta < 60) return 'in <1m';
+      if (delta < 3600) return 'in ' + Math.floor(delta / 60) + 'm';
+      const h = Math.floor(delta / 3600);
+      const m = Math.floor((delta % 3600) / 60);
+      return 'in ' + h + 'h' + (m ? ' ' + m + 'm' : '');
     },
     toastError(title, message) { this.toast = { show: true, type: 'error', title, message }; setTimeout(() => (this.toast.show = false), 7000); },
     toastInfo(title, message) { this.toast = { show: true, type: 'info', title, message }; setTimeout(() => (this.toast.show = false), 4000); },

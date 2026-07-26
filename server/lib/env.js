@@ -99,6 +99,7 @@ export const config = Object.freeze({
   cmAutoEnabled: boolOpt('CM_AUTO_ENABLED', false),
   cmAutoSecret: opt('CM_AUTO_SECRET', ''),
   cmAutoMaxDeletesPerRun: Math.max(1, Math.min(100, intOpt('CM_AUTO_MAX_DELETES_PER_RUN', 20))),
+  cmAutoSchedule: opt('CM_AUTO_SCHEDULE', '06:00,18:00'),
 
   userAgent: 'fb-ads-manager/0.8 (+node-express; +sync; +comments; +batch; +admgmt; +cm-auto)',
 });

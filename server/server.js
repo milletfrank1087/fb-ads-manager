@@ -22,6 +22,7 @@ import {
   analyzeAllPending as cmAnalyzeAll,
 } from './lib/commentSync.js';
 import { runCmAuto, cmAutoSecretOk } from './lib/autoRun.js';
+import { startScheduler, getSchedulerState } from './lib/scheduler.js';
 import { refreshDashboard, refreshLevel, refreshAllLevels, buildDashboardPayload } from './lib/refresh.js';
 import {
   setStatus as adSetStatus,
@@ -636,6 +637,7 @@ app.get('/api/cm/state', (_req, res) => {
     reviewSince: store.getReviewSince(),
     newSinceLastSync: store.getNewSinceLastSync(),
     cmAutoEnabled: config.cmAutoEnabled,
+    scheduler: getSchedulerState(),
   });
 });
 
@@ -687,7 +689,7 @@ app.post('/api/cm/discover', ah(async (_req, res) => {
 app.get('/api/cm/runs', (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 50;
   const runs = store.listCmRuns(limit);
-  res.json({ ok: true, runs, cmAutoEnabled: config.cmAutoEnabled });
+  res.json({ ok: true, runs, cmAutoEnabled: config.cmAutoEnabled, scheduler: getSchedulerState() });
 });
 
 app.get('/api/cm/runs/:id', (req, res) => {
@@ -1017,6 +1019,7 @@ const server = app.listen(config.port, () => {
     `Daily cap    ${snap.dailyCallsUsed} / ${snap.dailyCallCap} calls (day ${snap.dailyCallDay})`,
     `Cooldowns    ${snap.cooldowns.length} active`,
   ]);
+  startScheduler();
 });
 
 function shutdown(signal) {
