@@ -132,9 +132,13 @@ export async function runCmAuto({ trigger = 'scheduled' } = {}) {
   let httpCalls = 0;
 
   try {
-    const refresh = await refreshAllLevels({ datePreset: 'last_7d', onlyHadDelivery: false });
-    httpCalls += refresh.httpCalls || 0;
-    if (!refresh.ok) notes.push(`refresh_failed:${refresh.error || 'unknown'}`);
+    const refreshToday = await refreshAllLevels({ datePreset: 'today', onlyHadDelivery: false });
+    httpCalls += refreshToday.httpCalls || 0;
+    if (!refreshToday.ok) notes.push(`refresh_today_failed:${refreshToday.error || 'unknown'}`);
+
+    const refresh7d = await refreshAllLevels({ datePreset: 'last_7d', onlyHadDelivery: false });
+    httpCalls += refresh7d.httpCalls || 0;
+    if (!refresh7d.ok) notes.push(`refresh_7d_failed:${refresh7d.error || 'unknown'}`);
 
     const discover = await discoverPosts();
     httpCalls += discover.batchCalls || 0;
@@ -155,12 +159,12 @@ export async function runCmAuto({ trigger = 'scheduled' } = {}) {
     const elapsedMs = Date.now() - startedAt;
     const status = notes.length && (deleteResult.deleted === 0 && !sync.comments)
       ? 'partial'
-      : (notes.some((n) => n.startsWith('refresh_failed')) ? 'partial' : 'success');
+      : (notes.some((n) => n.includes('_failed')) ? 'partial' : 'success');
 
     const summary = {
       activePostIds: postIds,
       activeCampaigns: activePosts.map((p) => p.campaign_name).filter(Boolean),
-      refreshOk: !!refresh.ok,
+      refreshOk: !!refreshToday.ok && !!refresh7d.ok,
       discoverPosts: discover.processed ?? discover.uniquePosts ?? 0,
       notes,
     };
