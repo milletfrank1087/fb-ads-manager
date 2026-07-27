@@ -242,7 +242,10 @@ export function buildDashboardPayload(datePreset = 'today', { level = 'campaign'
   let rowsWithoutInsights = 0;
   for (const r of rows) {
     const ts = r.insights_fetched_at;
-    if (!ts) { rowsWithoutInsights += 1; continue; }
+    if (!ts) {
+      if (r.effective_status === 'ACTIVE') rowsWithoutInsights += 1;
+      continue;
+    }
     if (!lastInsightsFetchedAt || ts > lastInsightsFetchedAt) lastInsightsFetchedAt = ts;
     if (!oldestInsightsFetchedAt || ts < oldestInsightsFetchedAt) oldestInsightsFetchedAt = ts;
   }
