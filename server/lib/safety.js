@@ -59,9 +59,9 @@ export const safety = {
     if (runtimeKillSwitch) {
       return { ok: false, error: 'kill_switch_on', message: 'Kill switch is engaged. All Meta API calls are halted.' };
     }
-    if (method === 'MODERATE') {
-      if (!config.allowCommentModeration) {
-        return { ok: false, error: 'moderation_disabled', message: 'Comment moderation is disabled. Set FB_ALLOW_COMMENT_MODERATION=true to enable destructive comment actions.' };
+    if (method === 'MODERATE' || method === 'POST_PAGE') {
+      if (!config.allowCommentModeration && !config.allowAdManagement) {
+        return { ok: false, error: 'moderation_disabled', message: 'Comment moderation and page posting are disabled. Set FB_ALLOW_COMMENT_MODERATION=true to enable.' };
       }
     } else if (method === 'MANAGE') {
       if (!config.allowAdManagement) {

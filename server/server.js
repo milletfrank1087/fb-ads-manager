@@ -35,6 +35,14 @@ import {
   getAccountCapability as adGetCapability,
   adMgmtState,
 } from './lib/adManager.js';
+import {
+  CLINICAL_TOPICS,
+  generatePost,
+  listPosts as listPagePosts,
+  publishPost as publishPagePost,
+  deletePost as deletePagePost,
+  runAutoPostCycle,
+} from './lib/postManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -984,6 +992,56 @@ app.get('/api/rate-limit-details', (_req, res) => {
     devDashboardUrl: `https://developers.facebook.com/apps/${process.env.FB_APP_ID}/rate-limit-details/ads_management/?business_id=${process.env.FB_BUSINESS_ID}`,
   });
 });
+
+// --- Page Posts Manager (RiseHope Organic & Advocacy Feed) ---
+app.get('/api/posts/topics', (_req, res) => {
+  res.json({ ok: true, topics: CLINICAL_TOPICS });
+});
+
+app.get('/api/posts', ah(async (req, res) => {
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
+  const result = await listPagePosts({ limit });
+  res.json(result);
+}));
+
+app.post('/api/posts/generate', ah(async (req, res) => {
+  const { topicId, customPrompt } = req.body || {};
+  const result = await generatePost({ topicId, customPrompt });
+  res.json({ ok: true, ...result });
+}));
+
+app.post('/api/posts/publish', ah(async (req, res) => {
+  const { message, pillar, model } = req.body || {};
+  const result = await publishPagePost({ message, pillar, model });
+  if (!result.ok) {
+    return res.status(result.status || 500).json(result);
+  }
+  res.json(result);
+}));
+
+app.delete('/api/posts/:id', ah(async (req, res) => {
+  const result = await deletePagePost(req.params.id);
+  if (!result.ok) {
+    return res.status(500).json(result);
+  }
+  res.json(result);
+}));
+
+app.get('/api/posts/scheduler', (_req, res) => {
+  const logs = store.listPostSchedulerLogs(30);
+  res.json({
+    ok: true,
+    enabled: config.cmAutoEnabled,
+    schedule: config.cmAutoSchedule,
+    timezone: config.primaryAccountTz || 'Europe/Kiev',
+    logs,
+  });
+});
+
+app.post('/api/posts/scheduler/run', ah(async (_req, res) => {
+  const result = await runAutoPostCycle();
+  res.json(result);
+}));
 
 function safeJson(s) {
   try {

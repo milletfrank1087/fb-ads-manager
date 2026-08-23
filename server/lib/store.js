@@ -389,6 +389,36 @@ CREATE TABLE IF NOT EXISTS cm_run_actions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cm_run_actions_run ON cm_run_actions(run_id);
+
+CREATE TABLE IF NOT EXISTS page_posts (
+  id TEXT PRIMARY KEY,
+  page_id TEXT NOT NULL,
+  message TEXT,
+  created_time TEXT,
+  permalink_url TEXT,
+  reactions_count INTEGER DEFAULT 0,
+  comments_count INTEGER DEFAULT 0,
+  shares_count INTEGER DEFAULT 0,
+  is_published INTEGER DEFAULT 1,
+  created_by_app INTEGER DEFAULT 0,
+  pillar TEXT,
+  model TEXT,
+  last_synced_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_page_posts_page ON page_posts(page_id);
+CREATE INDEX IF NOT EXISTS idx_page_posts_created ON page_posts(created_time);
+
+CREATE TABLE IF NOT EXISTS post_scheduler_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  pillar TEXT,
+  model TEXT,
+  message TEXT,
+  fb_post_id TEXT,
+  status TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_post_scheduler_log_ts ON post_scheduler_log(timestamp);
 `;
 
 db.exec(SCHEMA);
@@ -1689,5 +1719,60 @@ export const store = {
       ORDER BY a.severity DESC, c.created_time DESC
       LIMIT ${lim}
     `).all(...postIds);
+  },
+
+  upsertPagePost(p) {
+    db.prepare(`
+      INSERT INTO page_posts (id, page_id, message, created_time, permalink_url, reactions_count, comments_count, shares_count, is_published, created_by_app, pillar, model, last_synced_at)
+      VALUES (@id, @page_id, @message, @created_time, @permalink_url, @reactions_count, @comments_count, @shares_count, @is_published, @created_by_app, @pillar, @model, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        message = excluded.message,
+        permalink_url = COALESCE(excluded.permalink_url, page_posts.permalink_url),
+        reactions_count = excluded.reactions_count,
+        comments_count = excluded.comments_count,
+        shares_count = excluded.shares_count,
+        is_published = excluded.is_published,
+        created_by_app = COALESCE(excluded.created_by_app, page_posts.created_by_app),
+        pillar = COALESCE(excluded.pillar, page_posts.pillar),
+        model = COALESCE(excluded.model, page_posts.model),
+        last_synced_at = datetime('now')
+    `).run({
+      id: p.id,
+      page_id: p.page_id,
+      message: p.message || '',
+      created_time: p.created_time || new Date().toISOString(),
+      permalink_url: p.permalink_url || null,
+      reactions_count: Number(p.reactions_count) || 0,
+      comments_count: Number(p.comments_count) || 0,
+      shares_count: Number(p.shares_count) || 0,
+      is_published: p.is_published ? 1 : 0,
+      created_by_app: p.created_by_app ? 1 : 0,
+      pillar: p.pillar || null,
+      model: p.model || null,
+    });
+  },
+
+  listPagePosts({ pageId, limit = 50 } = {}) {
+    const lim = Math.max(1, Math.min(100, Number(limit) || 50));
+    if (pageId) {
+      return db.prepare('SELECT * FROM page_posts WHERE page_id = ? ORDER BY created_time DESC LIMIT ?').all(pageId, lim);
+    }
+    return db.prepare('SELECT * FROM page_posts ORDER BY created_time DESC LIMIT ?').all(lim);
+  },
+
+  deletePagePost(id) {
+    return db.prepare('DELETE FROM page_posts WHERE id = ?').run(id).changes;
+  },
+
+  logPostSchedulerAction({ pillar, model, message, fb_post_id, status, error }) {
+    db.prepare(`
+      INSERT INTO post_scheduler_log (pillar, model, message, fb_post_id, status, error, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(pillar || null, model || null, message ? String(message).slice(0, 500) : null, fb_post_id || null, status || 'ok', error ? String(error).slice(0, 300) : null);
+  },
+
+  listPostSchedulerLogs(limit = 50) {
+    const lim = Math.max(1, Math.min(100, Number(limit) || 50));
+    return db.prepare('SELECT * FROM post_scheduler_log ORDER BY id DESC LIMIT ?').all(lim);
   },
 };

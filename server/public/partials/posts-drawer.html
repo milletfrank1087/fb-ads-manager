@@ -1,0 +1,291 @@
+    <div x-data="postsManager()" x-init="init()"
+         @open-posts-manager.window="openManager($event.detail)"
+         @keydown.escape.window="isOpen && close()"
+         x-show="isOpen" x-cloak
+         class="fixed inset-0 z-[60] bg-meta-gray-50 flex flex-col">
+
+      <!-- TOP BAR -->
+      <header class="bg-white border-b border-gray-200 flex-shrink-0">
+        <div class="px-5 py-2.5 flex items-center flex-wrap gap-y-2 gap-3">
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"/></svg>
+            </div>
+            <div>
+              <div class="text-sm font-bold leading-tight">Page Posts Manager</div>
+              <div class="text-[11px] text-meta-gray-600 font-mono" x-text="'RiseHope · ' + (pageId || '113297813778299')"></div>
+            </div>
+          </div>
+
+          <!-- summary chips -->
+          <div class="flex items-center gap-1.5 ml-0 md:ml-3 flex-nowrap md:flex-wrap overflow-x-auto no-scrollbar text-xs">
+            <span class="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
+              <span class="font-bold" x-text="posts.length"></span> live posts
+            </span>
+            <span class="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+              OpenRouter: <span class="font-mono text-[11px]">Gemini 2.5 Flash Lite</span>
+            </span>
+            <span class="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
+              Zero Emojis · Clinical & Advocacy
+            </span>
+          </div>
+
+          <div class="flex-1"></div>
+
+          <button @click="refreshFeed()" :disabled="busy.feed"
+                  class="px-3 py-1.5 bg-white border border-gray-300 text-meta-gray-900 text-xs font-semibold rounded-md hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1.5"
+                  title="Refresh published posts from Facebook Graph API via residential proxy">
+            <svg class="w-3.5 h-3.5" :class="busy.feed ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <span x-text="busy.feed ? 'Refreshing…' : 'Refresh Feed'"></span>
+          </button>
+
+          <button @click="close()" title="Close (Esc)" class="p-1.5 text-meta-gray-600 hover:bg-gray-100 rounded-md">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- TABS BAR -->
+      <nav class="bg-white border-b border-gray-200 px-5 flex items-center gap-1 flex-shrink-0 overflow-x-auto no-scrollbar" aria-label="Page Posts Tabs">
+        <button @click="tab = 'generate'"
+                :class="tab === 'generate' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-meta-gray-600 hover:text-meta-gray-800'"
+                class="px-3.5 py-2.5 text-xs font-semibold border-b-2 -mb-px flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+          Create & AI Generator
+        </button>
+        <button @click="tab = 'feed'"
+                :class="tab === 'feed' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-meta-gray-600 hover:text-meta-gray-800'"
+                class="px-3.5 py-2.5 text-xs font-semibold border-b-2 -mb-px flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"/></svg>
+          Live Feed (<span x-text="posts.length"></span>)
+        </button>
+        <button @click="tab = 'scheduler'"
+                :class="tab === 'scheduler' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-meta-gray-600 hover:text-meta-gray-800'"
+                class="px-3.5 py-2.5 text-xs font-semibold border-b-2 -mb-px flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Automation & Schedule
+        </button>
+      </nav>
+
+      <!-- MAIN CONTENT -->
+      <main class="flex-1 overflow-y-auto p-5">
+
+        <!-- TAB: CREATE & GENERATE -->
+        <div x-show="tab === 'generate'" class="max-w-4xl mx-auto space-y-5">
+          
+          <div class="bg-white rounded-lg border border-gray-200 p-5 shadow-sm space-y-4">
+            <div>
+              <h3 class="text-sm font-bold text-meta-gray-900">1. Select Clinical Topic or Enter Custom Direction</h3>
+              <p class="text-xs text-meta-gray-600 mt-0.5">Content generation uses OpenRouter (Gemini 2.5 Flash Lite) with strict constraints: zero emojis, no hype buzzwords, and rigorous medical accuracy.</p>
+            </div>
+
+            <!-- Topic Selector -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <template x-for="t in topics" :key="t.id">
+                <button type="button"
+                        @click="selectedTopicId = t.id; customPrompt = ''"
+                        :class="selectedTopicId === t.id && !customPrompt ? 'border-emerald-600 bg-emerald-50/50 ring-1 ring-emerald-500' : 'border-gray-200 hover:border-gray-300 bg-white'"
+                        class="p-3 text-left rounded-md border transition flex flex-col justify-between">
+                  <div>
+                    <div class="text-xs font-semibold text-meta-gray-900" x-text="t.title"></div>
+                    <div class="text-[11px] text-emerald-700 font-medium mt-0.5" x-text="t.pillar"></div>
+                  </div>
+                </button>
+              </template>
+            </div>
+
+            <!-- Custom Topic Field -->
+            <div class="space-y-1">
+              <label class="block text-xs font-medium text-meta-gray-700">Optional: Custom Clinical Prompt / Angle</label>
+              <textarea x-model="customPrompt" rows="2"
+                        placeholder="e.g. Explain how MRI perfusion imaging differentiates radiation necrosis from true tumor progression in glioblastoma..."
+                        class="w-full text-xs p-2.5 border border-gray-300 rounded-md focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"></textarea>
+            </div>
+
+            <!-- Generate Button -->
+            <div class="flex items-center justify-between pt-2">
+              <div class="text-xs text-meta-gray-600">
+                <span x-show="selectedTopic" x-text="'Selected: ' + (selectedTopic?.title || 'Custom')"></span>
+              </div>
+              <button @click="generateContent()" :disabled="busy.generate"
+                      class="px-4 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-md hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2">
+                <svg class="w-4 h-4" :class="busy.generate ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                <span x-text="busy.generate ? 'Generating with AI…' : 'Generate Post'"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Post Editor & Preview -->
+          <div class="bg-white rounded-lg border border-gray-200 p-5 shadow-sm space-y-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-meta-gray-900">2. Review & Edit Post Text</h3>
+                <p class="text-xs text-meta-gray-600 mt-0.5">Edit text directly before publishing. Confirm factual correctness and tone.</p>
+              </div>
+              <div class="flex items-center gap-3 text-xs text-meta-gray-600">
+                <span>Words: <b class="text-meta-gray-900" x-text="wordCount"></b></span>
+                <span>Characters: <b class="text-meta-gray-900" x-text="draftText.length"></b></span>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <textarea x-model="draftText" rows="10"
+                        placeholder="Generated post content will appear here. You can also type or paste content directly..."
+                        class="w-full text-xs font-mono p-3 border border-gray-300 rounded-md focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 leading-relaxed"></textarea>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex items-center justify-between pt-2">
+              <button @click="draftText = ''" :disabled="!draftText"
+                      class="px-3 py-1.5 text-xs text-meta-gray-600 hover:text-red-600 disabled:opacity-30">
+                Clear Text
+              </button>
+
+              <div class="flex items-center gap-2">
+                <button @click="copyDraft()" :disabled="!draftText"
+                        class="px-3 py-1.5 bg-white border border-gray-300 text-meta-gray-700 text-xs font-semibold rounded-md hover:bg-gray-50 disabled:opacity-40">
+                  Copy to Clipboard
+                </button>
+                <button @click="publishDraft()" :disabled="busy.publish || !draftText.trim()"
+                        class="px-4 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-md hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2">
+                  <svg class="w-4 h-4" :class="busy.publish ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                  <span x-text="busy.publish ? 'Publishing to RiseHope…' : 'Publish Live to RiseHope'"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- TAB: LIVE PAGE FEED -->
+        <div x-show="tab === 'feed'" class="max-w-5xl mx-auto space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-meta-gray-900">Published Posts on RiseHope</h3>
+            <span class="text-xs text-meta-gray-600">Showing <span class="font-semibold text-meta-gray-900" x-text="posts.length"></span> live posts</span>
+          </div>
+
+          <div class="space-y-3">
+            <template x-for="p in posts" :key="p.id">
+              <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm space-y-3">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="flex items-center gap-2">
+                    <span class="px-2 py-0.5 rounded text-[11px] font-semibold"
+                          :class="p.created_by_app ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'"
+                          x-text="p.created_by_app ? 'API Generated' : 'Page Post'"></span>
+                    <span class="text-xs text-meta-gray-600 font-mono" x-text="formatDate(p.created_time)"></span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <a :href="p.permalink_url || ('https://facebook.com/' + p.id)" target="_blank" rel="noopener noreferrer"
+                       class="text-xs text-blue-600 hover:underline flex items-center gap-1 font-medium">
+                      <span>View on FB</span>
+                      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                    </a>
+                  </div>
+                </div>
+
+                <div class="text-xs text-meta-gray-800 whitespace-pre-line leading-relaxed font-sans bg-gray-50/50 p-3 rounded border border-gray-100 max-h-60 overflow-y-auto"
+                     x-text="p.message || '(No text content / photo post)'"></div>
+
+                <div class="flex items-center justify-between pt-1 border-t border-gray-100 text-xs text-meta-gray-600">
+                  <div class="flex items-center gap-4">
+                    <span>Reactions: <b class="text-meta-gray-900" x-text="p.reactions_count || 0"></b></span>
+                    <span>Comments: <b class="text-meta-gray-900" x-text="p.comments_count || 0"></b></span>
+                    <span>Shares: <b class="text-meta-gray-900" x-text="p.shares_count || 0"></b></span>
+                  </div>
+
+                  <div class="flex items-center gap-2">
+                    <button @click="$dispatch('open-comments-manager', { postId: p.id })"
+                            class="px-2.5 py-1 bg-meta-blue text-white rounded text-xs font-semibold hover:bg-blue-700 flex items-center gap-1">
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                      Moderate Comments
+                    </button>
+                    <button @click="deleteLivePost(p.id)"
+                            class="px-2.5 py-1 text-red-600 hover:bg-red-50 rounded text-xs font-medium border border-red-200">
+                      Delete Post
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- TAB: AUTOMATION & SCHEDULER -->
+        <div x-show="tab === 'scheduler'" class="max-w-4xl mx-auto space-y-5">
+          <div class="bg-white rounded-lg border border-gray-200 p-5 shadow-sm space-y-4">
+            <div class="flex items-start justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-meta-gray-900">Twice-Daily Auto-Poster (Cloud Daemon)</h3>
+                <p class="text-xs text-meta-gray-600 mt-0.5">Generates and publishes organic posts at 09:00 and 19:00 Europe/Kiev via OpenRouter through the residential proxy.</p>
+              </div>
+              <button @click="triggerSchedulerRun()" :disabled="busy.schedRun"
+                      class="px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-md hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" :class="busy.schedRun ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span x-text="busy.schedRun ? 'Executing…' : 'Trigger Auto-Post Now'"></span>
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+              <div class="p-3 bg-gray-50 rounded border border-gray-200">
+                <div class="text-[11px] text-meta-gray-600 font-medium">Daily Cadence</div>
+                <div class="text-sm font-bold text-meta-gray-900 mt-1">Twice Daily (09:00 & 19:00)</div>
+              </div>
+              <div class="p-3 bg-gray-50 rounded border border-gray-200">
+                <div class="text-[11px] text-meta-gray-600 font-medium">Topic Rotation</div>
+                <div class="text-sm font-bold text-emerald-700 mt-1">10 Clinical & Advocacy Axes</div>
+              </div>
+              <div class="p-3 bg-gray-50 rounded border border-gray-200">
+                <div class="text-[11px] text-meta-gray-600 font-medium">Egress Pipeline</div>
+                <div class="text-sm font-bold text-blue-700 mt-1">Residential Proxy + HMAC</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Execution Audit Logs -->
+          <div class="bg-white rounded-lg border border-gray-200 p-5 shadow-sm space-y-3">
+            <h4 class="text-xs font-bold text-meta-gray-900 uppercase tracking-wider">Recent Publishing Activity</h4>
+            
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr class="border-b border-gray-200 text-meta-gray-600 font-semibold">
+                    <th class="py-2 px-2">Timestamp</th>
+                    <th class="py-2 px-2">Pillar</th>
+                    <th class="py-2 px-2">Model</th>
+                    <th class="py-2 px-2">Status</th>
+                    <th class="py-2 px-2">Post ID / Details</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                  <template x-for="log in schedulerLogs" :key="log.id">
+                    <tr>
+                      <td class="py-2 px-2 font-mono text-[11px] text-meta-gray-700" x-text="formatDate(log.timestamp)"></td>
+                      <td class="py-2 px-2 font-medium" x-text="log.pillar || 'General'"></td>
+                      <td class="py-2 px-2 text-meta-gray-600 font-mono text-[11px]" x-text="log.model || '—'"></td>
+                      <td class="py-2 px-2">
+                        <span class="px-2 py-0.5 rounded text-[11px] font-semibold"
+                              :class="log.status === 'published' ? 'bg-green-100 text-green-800' : log.status === 'failed' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'"
+                              x-text="log.status"></span>
+                      </td>
+                      <td class="py-2 px-2 font-mono text-[11px]">
+                        <span x-show="log.fb_post_id" class="text-blue-600" x-text="log.fb_post_id"></span>
+                        <span x-show="log.error" class="text-red-600" x-text="log.error"></span>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </main>
+
+      <!-- TOAST NOTIFICATION -->
+      <div x-show="toast.show" x-transition x-cloak
+           class="fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-lg shadow-lg text-xs font-medium flex items-center gap-2"
+           :class="toast.type === 'error' ? 'bg-red-600 text-white' : 'bg-emerald-600 text-white'">
+        <span x-text="toast.message"></span>
+      </div>
+
+    </div>

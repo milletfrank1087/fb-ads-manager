@@ -290,6 +290,14 @@ export const fb = {
     return rawRequest(method, path, { data, endpointKey, safetyMethod: 'MODERATE', tokenKind: 'page' });
   },
 
+  async pagePost(path, data, endpointKey) {
+    return rawRequest('POST', path, { data, endpointKey, safetyMethod: 'POST_PAGE', tokenKind: 'page' });
+  },
+
+  async pageDelete(path, params, endpointKey) {
+    return rawRequest('DELETE', path, { params, endpointKey, safetyMethod: 'POST_PAGE', tokenKind: 'page' });
+  },
+
   async manage(method, path, data, endpointKey) {
     return rawRequest(method, path, { data, endpointKey, safetyMethod: 'MANAGE', tokenKind: 'sysuser' });
   },

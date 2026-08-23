@@ -1,6 +1,7 @@
 import { config } from './env.js';
 import { log } from './logger.js';
 import { runCmAuto } from './autoRun.js';
+import { runAutoPostCycle } from './postManager.js';
 
 let timer = null;
 let nextRunAt = null;
@@ -63,18 +64,29 @@ async function tick() {
   }
 
   log.info('scheduler.fire', { trigger: 'scheduled' });
-  try {
-    const result = await runCmAuto({ trigger: 'scheduled' });
-    if (result.ok) {
-      log.info('scheduler.done', { runId: result.runId, deleted: result.run?.comments_deleted || 0 });
-    } else {
-      log.warn('scheduler.run_failed', { error: result.error, message: result.message });
+    try {
+      const result = await runCmAuto({ trigger: 'scheduled' });
+      if (result.ok) {
+        log.info('scheduler.done', { runId: result.runId, deleted: result.run?.comments_deleted || 0 });
+      } else {
+        log.warn('scheduler.run_failed', { error: result.error, message: result.message });
+      }
+    } catch (err) {
+      log.error('scheduler.error', { error: String(err.message || err) });
     }
-  } catch (err) {
-    log.error('scheduler.error', { error: String(err.message || err) });
-  }
 
-  schedule();
+    try {
+      const postResult = await runAutoPostCycle();
+      if (postResult.ok) {
+        log.info('scheduler.autopost.done', { topic: postResult.topic, postId: postResult.postId });
+      } else {
+        log.warn('scheduler.autopost.failed', { error: postResult.error });
+      }
+    } catch (postErr) {
+      log.error('scheduler.autopost.error', { error: String(postErr.message || postErr) });
+    }
+
+    schedule();
 }
 
 function schedule() {

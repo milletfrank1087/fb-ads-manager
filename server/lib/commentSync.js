@@ -64,6 +64,23 @@ export async function syncPosts({ withComments = true } = {}) {
   for (const a of ads) {
     if (a.post_id && !byPost.has(a.post_id)) byPost.set(a.post_id, a);
   }
+
+  // Also include organic posts from page_posts store
+  if (config.targetPageId) {
+    const pagePosts = store.listPagePosts({ pageId: config.targetPageId, limit: 30 });
+    for (const p of pagePosts) {
+      if (p.id && !byPost.has(p.id)) {
+        byPost.set(p.id, {
+          post_id: p.id,
+          campaign_name: 'RiseHope Organic Feed',
+          campaign_id: 'organic',
+          ad_name: p.pillar || 'Page Feed Post',
+          effective_status: 'ACTIVE',
+        });
+      }
+    }
+  }
+
   // Only posts OWNED by our target page are readable with the minted page token.
   // object_story_id is "{pageId}_{postId}", so filter by prefix; promoted posts from other
   // pages would just 400 and waste batch sub-ops (which still count against Meta limits).
