@@ -1011,8 +1011,8 @@ app.post('/api/posts/generate', ah(async (req, res) => {
 }));
 
 app.post('/api/posts/publish', ah(async (req, res) => {
-  const { message, pillar, model } = req.body || {};
-  const result = await publishPagePost({ message, pillar, model });
+  const { message, pillar, model, topicId } = req.body || {};
+  const result = await publishPagePost({ message, pillar, model, topicId });
   if (!result.ok) {
     return res.status(result.status || 500).json(result);
   }

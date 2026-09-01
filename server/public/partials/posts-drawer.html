@@ -216,7 +216,7 @@
             <div class="flex items-start justify-between">
               <div>
                 <h3 class="text-sm font-bold text-meta-gray-900">Twice-Daily Auto-Poster (Cloud Daemon)</h3>
-                <p class="text-xs text-meta-gray-600 mt-0.5">Generates and publishes organic posts at 09:00 and 19:00 Europe/Kiev via OpenRouter through the residential proxy.</p>
+                <p class="text-xs text-meta-gray-600 mt-0.5">Generates and publishes organic posts at 06:00 and 18:00 Europe/Kiev. Each run picks a random clinical topic that has not been used in the last 12 posts.</p>
               </div>
               <button @click="triggerSchedulerRun()" :disabled="busy.schedRun"
                       class="px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-md hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5">
@@ -228,11 +228,11 @@
             <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
               <div class="p-3 bg-gray-50 rounded border border-gray-200">
                 <div class="text-[11px] text-meta-gray-600 font-medium">Daily Cadence</div>
-                <div class="text-sm font-bold text-meta-gray-900 mt-1">Twice Daily (09:00 & 19:00)</div>
+                <div class="text-sm font-bold text-meta-gray-900 mt-1">Twice Daily (06:00 & 18:00 Kiev)</div>
               </div>
               <div class="p-3 bg-gray-50 rounded border border-gray-200">
                 <div class="text-[11px] text-meta-gray-600 font-medium">Topic Rotation</div>
-                <div class="text-sm font-bold text-emerald-700 mt-1">10 Clinical & Advocacy Axes</div>
+                <div class="text-sm font-bold text-emerald-700 mt-1">Random unused topic (25 axes)</div>
               </div>
               <div class="p-3 bg-gray-50 rounded border border-gray-200">
                 <div class="text-[11px] text-meta-gray-600 font-medium">Egress Pipeline</div>

@@ -11,6 +11,11 @@ Running log. Every field-tested finding lives here. Format:
 
 ---
 
+## 2026-09-01 Auto-poster stuck on dendritic cell therapy
+- finding: `runAutoPostCycle` picked `CLINICAL_TOPICS[logs.length % 10]` while always fetching the last 10 logs, so after 10 publishes `10 % 10 === 0` forever — every 12h post regenerated the same DC-vaccine prompt at temperature 0.65.
+- evidence: RiseHope `published_posts` 28 Aug 03:00 UTC through 1 Sep 03:00 UTC all open with "Dendritic cell (DC) therapy represents...". The three posts before that (neoantigens, second opinions, cross-border) were indexes 7–9, then the modulo locked on 0.
+- consequence: `pickNextTopic()` samples randomly from topics not used in the last 12 posts; 24 clinical axes; `topic_id` persisted on `post_scheduler_log`; temperature 0.95; retry if a non-DC topic still mentions dendritic cells.
+
 ## 2026-06-04 Full advisor re-evaluation → an account-specific OPERATING MANDATE (the brain was advising against reality)
 
 Pulled a complete live picture of `act_1622353565055773` (20 proxied read-only calls: account, 26 campaigns, 58 ad sets w/ full targeting+optimization+`learning_stage_info`, 80 ads, 3 insight windows, all 10 pixels + their `event_source` split, custom conversions, audiences). Three findings showed the advisor's generic brain was actively WRONG for this account:

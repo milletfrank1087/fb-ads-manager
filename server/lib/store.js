@@ -432,6 +432,7 @@ for (const migration of [
   'ALTER TABLE comments ADD COLUMN user_likes INTEGER DEFAULT 0',
   'ALTER TABLE comments ADD COLUMN can_reply_privately INTEGER DEFAULT 0',
   'ALTER TABLE comments ADD COLUMN first_seen_at TEXT',
+  'ALTER TABLE post_scheduler_log ADD COLUMN topic_id TEXT',
 ]) {
   try { db.exec(migration); } catch (err) {
     if (!/duplicate column name/i.test(String(err.message || err))) {
@@ -1764,11 +1765,19 @@ export const store = {
     return db.prepare('DELETE FROM page_posts WHERE id = ?').run(id).changes;
   },
 
-  logPostSchedulerAction({ pillar, model, message, fb_post_id, status, error }) {
+  logPostSchedulerAction({ pillar, model, message, fb_post_id, status, error, topic_id }) {
     db.prepare(`
-      INSERT INTO post_scheduler_log (pillar, model, message, fb_post_id, status, error, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(pillar || null, model || null, message ? String(message).slice(0, 500) : null, fb_post_id || null, status || 'ok', error ? String(error).slice(0, 300) : null);
+      INSERT INTO post_scheduler_log (pillar, model, message, fb_post_id, status, error, timestamp, topic_id)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)
+    `).run(
+      pillar || null,
+      model || null,
+      message ? String(message).slice(0, 500) : null,
+      fb_post_id || null,
+      status || 'ok',
+      error ? String(error).slice(0, 300) : null,
+      topic_id || null,
+    );
   },
 
   listPostSchedulerLogs(limit = 50) {

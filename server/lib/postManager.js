@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import { config } from './env.js';
 import { log } from './logger.js';
 import { fb } from './fbClient.js';
@@ -66,7 +67,144 @@ export const CLINICAL_TOPICS = [
     pillar: 'Global Patient Advocacy',
     prompt: 'Address the logistical and administrative complexities faced by families seeking specialized clinical trials or advanced immunotherapies in foreign medical centers. Explain how patient advocacy groups assist with medical record translation, institutional coordination, and cross-border access pathways.',
   },
+  {
+    id: 'car-t',
+    title: 'CAR-T Cell Therapy in Solid vs Hematologic Cancers',
+    pillar: 'Cellular Immunotherapy',
+    prompt: 'Explain chimeric antigen receptor T-cell therapy: how a patient\'s T-cells are engineered to recognize a tumor antigen. Contrast the established success in B-cell leukemias and lymphomas with the barriers in solid tumors (trafficking, antigen heterogeneity, immunosuppressive microenvironment). Keep it factual and clinical.',
+  },
+  {
+    id: 'stupp-protocol',
+    title: 'The Stupp Protocol for Glioblastoma',
+    pillar: 'Standard-of-Care Neuro-Oncology',
+    prompt: 'Explain the Stupp protocol: maximal safe resection followed by concurrent radiotherapy plus temozolomide, then adjuvant temozolomide. Discuss why MGMT promoter methylation predicts benefit, and why this backbone remains standard even as experimental options are added.',
+  },
+  {
+    id: 'bbb',
+    title: 'The Blood-Brain Barrier and Drug Delivery',
+    pillar: 'Neuropharmacology',
+    prompt: 'Explain the blood-brain barrier as a clinical obstacle in treating brain tumors. Cover tight junctions, efflux pumps, and why many systemic chemotherapies fail to reach therapeutic concentrations in the CNS. Mention focused ultrasound, convection-enhanced delivery, and intra-arterial approaches as investigational delivery methods.',
+  },
+  {
+    id: 'hsct',
+    title: 'Hematopoietic Stem Cell Transplant for Pediatric Leukemia',
+    pillar: 'Pediatric Hematology',
+    prompt: 'Explain allogeneic hematopoietic stem cell transplantation in high-risk pediatric leukemia: conditioning, graft-versus-leukemia, graft-versus-host disease, and the search for a matched related or unrelated donor. Ground it in hospital-ward reality for families, not slogans.',
+  },
+  {
+    id: 'icp-neuro',
+    title: 'Raised Intracranial Pressure in Brain Tumors',
+    pillar: 'Neurosurgical Emergencies',
+    prompt: 'Explain how a brain tumor can raise intracranial pressure: mass effect, edema, hydrocephalus. Cover warning signs clinicians watch for, corticosteroids for vasogenic edema, and when CSF diversion (EVD or shunt) is considered. Keep it educational, not diagnostic advice.',
+  },
+  {
+    id: 'mri-surveillance',
+    title: 'MRI Surveillance After Glioma Resection',
+    pillar: 'Neuroimaging',
+    prompt: 'Explain why serial MRI is used after glioma surgery: distinguishing residual tumor from treatment-related change (pseudoprogression vs true progression). Mention contrast-enhanced sequences, RANO criteria at a high level, and why a single scan rarely settles the question.',
+  },
+  {
+    id: 'infection-prophylaxis',
+    title: 'Infection Risk During Intensive Chemotherapy',
+    pillar: 'Supportive Oncology',
+    prompt: 'Explain why prolonged neutropenia during intensive chemotherapy creates infection risk. Cover central-line care, febrile neutropenia as an emergency, and common prophylaxis strategies (without naming this as medical advice for a specific patient).',
+  },
+  {
+    id: 'fertility-onco',
+    title: 'Fertility Preservation Before Gonadotoxic Therapy',
+    pillar: 'Oncofertility',
+    prompt: 'Explain why gonadotoxic chemotherapy and cranial or pelvic radiotherapy can affect future fertility, and why fertility counseling is time-sensitive before treatment starts. Cover oocyte/embryo cryopreservation and sperm banking at a high level. Keep the tone clinical and respectful.',
+  },
+  {
+    id: 'trial-phases',
+    title: 'How Oncology Clinical Trial Phases Actually Work',
+    pillar: 'Clinical Research Literacy',
+    prompt: 'Explain Phase I vs II vs III oncology trials: safety, dose-finding, activity, and confirmatory endpoints. Clarify randomization, control arms, and why a promising Phase II result is not the same as a new standard of care. No hype.',
+  },
+  {
+    id: 'palliative-intent',
+    title: 'Curative vs Palliative Intent in Aggressive Tumors',
+    pillar: 'Clinical Ethics & Communication',
+    prompt: 'Explain the distinction between curative-intent and palliative-intent treatment in aggressive cancers. Cover how goals-of-care conversations, symptom control, and disease-directed therapy can run in parallel. Dignified, precise language. No sentimentality.',
+  },
+  {
+    id: 'nutrition-chemo',
+    title: 'Nutrition and Cachexia During Cancer Treatment',
+    pillar: 'Supportive Care',
+    prompt: 'Explain cancer cachexia and treatment-related anorexia, mucositis, and taste change. Discuss why maintaining protein-calorie intake matters during intensive therapy, and the role of dietitians and, when indicated, feeding support. Clinical, not wellness-blog tone.',
+  },
+  {
+    id: 'dexamethasone',
+    title: 'Corticosteroids for Tumor-Related Brain Edema',
+    pillar: 'Neuro-Oncology Supportive Care',
+    prompt: 'Explain why dexamethasone is used for vasogenic edema around brain tumors, typical clinical effects (reduced headache, improved alertness), and the trade-offs of prolonged high-dose steroids (hyperglycemia, myopathy, infection risk, mood change). Do not give dosing advice.',
+  },
+  {
+    id: 'mgmt-idh',
+    title: 'MGMT, IDH, and Why the Pathology Report Matters',
+    pillar: 'Molecular Neuropathology',
+    prompt: 'Walk through what MGMT promoter methylation and IDH mutation status mean for a glioma diagnosis and treatment planning. Explain that these are laboratory results used by the treating team, not internet self-diagnosis. Contrast IDH-mutant vs IDH-wildtype disease courses at a high level.',
+  },
+  {
+    id: 'central-lines',
+    title: 'Central Venous Lines in Pediatric Oncology',
+    pillar: 'Hospital Practice',
+    prompt: 'Explain why children on prolonged chemotherapy often have a Broviac, Hickman, or port: blood draws, infusions, reduced needle sticks. Cover line-care burden on parents, occlusion, and infection risk in plain clinical language.',
+  },
+  {
+    id: 'late-effects',
+    title: 'Late Effects After Childhood Cancer Treatment',
+    pillar: 'Survivorship',
+    prompt: 'Explain late effects after pediatric cancer therapy: neurocognitive change after cranial radiation, endocrine deficits, hearing loss after platinum agents, cardiomyopathy after anthracyclines. Frame survivorship clinics as long-term medical follow-up, not inspiration content.',
+  },
 ];
+
+const DRAFT_ANGLES = [
+  'Open with a specific hospital-floor or lab-bench detail, then explain the science.',
+  'Open with a common misconception patients hear, then correct it with the mechanism.',
+  'Open with a timeline (what happens in week 1 vs month 3), then the biology underneath.',
+  'Open with a comparison of two approaches and why clinicians choose one setting over the other.',
+  'Open with a regulatory or insurance bottleneck, then the clinical reason the delay matters.',
+  'Open with a diagnostic test or scan finding, then what the treating team does with that information.',
+];
+
+const RECENT_TOPIC_WINDOW = 12;
+
+function recentTopicIds() {
+  const fromLogs = store.listPostSchedulerLogs(40)
+    .filter((row) => row.status === 'published')
+    .flatMap((row) => {
+      const ids = [];
+      if (row.topic_id) ids.push(row.topic_id);
+      const inferred = inferTopicIdFromMessage(row.message);
+      if (inferred) ids.push(inferred);
+      return ids;
+    });
+
+  const fromPage = store.listPagePosts({ limit: 20 })
+    .map((p) => inferTopicIdFromMessage(p.message))
+    .filter(Boolean);
+
+  return [...fromLogs, ...fromPage].slice(0, RECENT_TOPIC_WINDOW);
+}
+
+function inferTopicIdFromMessage(message) {
+  const text = String(message || '').toLowerCase();
+  if (!text) return null;
+  const scored = CLINICAL_TOPICS.map((t) => {
+    const needles = t.title.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 4);
+    const hits = needles.filter((w) => text.includes(w)).length;
+    return { id: t.id, hits };
+  }).sort((a, b) => b.hits - a.hits);
+  return scored[0]?.hits ? scored[0].id : null;
+}
+
+export function pickNextTopic({ excludeIds } = {}) {
+  const blocked = new Set(excludeIds || recentTopicIds());
+  const unused = CLINICAL_TOPICS.filter((t) => !blocked.has(t.id));
+  const pool = unused.length ? unused : CLINICAL_TOPICS;
+  return pool[randomInt(pool.length)];
+}
 
 const SYSTEM_PROMPT = `You are the lead medical communications and patient advocacy director for RiseHope (https://risehope.online), an international initiative supporting families facing rare pediatric and aggressive oncological diagnoses.
 
@@ -79,7 +217,9 @@ CRITICAL INVARIANTS:
 3. Write in clean, dignified, authoritative English suitable for oncologists, clinical researchers, patients, and serious supporters.
 4. Structure with clear, professional paragraphs or brief technical bullet points.
 5. Conclude with a dignified statement on patient advocacy and 3-4 professional hashtags (always include #RiseHope).
-6. Return ONLY the raw post content ready for publishing. Do NOT wrap in markdown code blocks or add introductory/explanatory commentary.`;
+6. Return ONLY the raw post content ready for publishing. Do NOT wrap in markdown code blocks or add introductory/explanatory commentary.
+7. Write ONLY about the assigned topic. If the assigned topic is not dendritic cell therapy, do not mention dendritic cells.
+8. Never start with the template "X represents a strategy/specialized form of..." — vary the opening every time.`;
 
 export async function generatePost({ topicId, customPrompt } = {}) {
   if (!config.openrouterApiKey) {
@@ -88,10 +228,26 @@ export async function generatePost({ topicId, customPrompt } = {}) {
 
   let selectedTopic = null;
   if (topicId) {
-    selectedTopic = CLINICAL_TOPICS.find((t) => t.id === topicId);
+    selectedTopic = CLINICAL_TOPICS.find((t) => t.id === topicId) || null;
+  }
+  if (!selectedTopic && !customPrompt) {
+    selectedTopic = pickNextTopic();
   }
 
-  const promptText = customPrompt || selectedTopic?.prompt || CLINICAL_TOPICS[0].prompt;
+  const angle = DRAFT_ANGLES[randomInt(DRAFT_ANGLES.length)];
+  const promptText = customPrompt || [
+    `ASSIGNED TOPIC (mandatory, do not switch): ${selectedTopic.title}`,
+    `PILLAR: ${selectedTopic.pillar}`,
+    `DRAFT ANGLE: ${angle}`,
+    'Do not write about any other clinical topic.',
+    selectedTopic.id === 'dc-vaccines'
+      ? ''
+      : 'Do not mention dendritic cell therapy, DC vaccines, or pulsed autologous dendritic cells.',
+    'Do not open with "X represents a strategy" or "X represents a specialized form".',
+    '',
+    selectedTopic.prompt,
+  ].filter(Boolean).join('\n');
+
   const pillar = selectedTopic?.pillar || 'Medical Oncology & Advocacy';
 
   const models = [
@@ -119,7 +275,7 @@ export async function generatePost({ topicId, customPrompt } = {}) {
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: promptText },
           ],
-          temperature: 0.65,
+          temperature: 0.95,
           max_tokens: 750,
         }),
       });
@@ -144,6 +300,12 @@ export async function generatePost({ topicId, customPrompt } = {}) {
 
   if (!content) {
     throw new Error(`Failed to generate post: ${lastError || 'Unknown OpenRouter error'}`);
+  }
+
+  const leakedDc = selectedTopic && selectedTopic.id !== 'dc-vaccines'
+    && /dendritic cell/i.test(content);
+  if (leakedDc) {
+    log.warn('post.generate.topic_leak', { wanted: selectedTopic.id, snippet: content.slice(0, 120) });
   }
 
   return {
@@ -192,7 +354,7 @@ export async function listPosts({ limit = 30 } = {}) {
   };
 }
 
-export async function publishPost({ message, pillar, model } = {}) {
+export async function publishPost({ message, pillar, model, topicId } = {}) {
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
     throw new Error('Post message content is required.');
   }
@@ -200,7 +362,7 @@ export async function publishPost({ message, pillar, model } = {}) {
   const pageId = config.targetPageId || '113297813778299';
   const trimmed = message.trim();
 
-  log.info('post.publish.start', { pageId, length: trimmed.length });
+  log.info('post.publish.start', { pageId, length: trimmed.length, topicId: topicId || null });
 
   const res = await fb.pagePost(
     `${pageId}/feed`,
@@ -217,6 +379,7 @@ export async function publishPost({ message, pillar, model } = {}) {
       message: trimmed,
       status: 'failed',
       error: errMsg,
+      topic_id: topicId || null,
     });
     return { ok: false, error: errMsg, status: res.httpStatus };
   }
@@ -242,6 +405,7 @@ export async function publishPost({ message, pillar, model } = {}) {
     message: trimmed,
     fb_post_id: postId,
     status: 'published',
+    topic_id: topicId || null,
   });
 
   return { ok: true, postId, permalinkUrl: `https://www.facebook.com/${postId}` };
@@ -266,24 +430,29 @@ export async function deletePost(postId) {
 
 export async function runAutoPostCycle() {
   log.info('autopost.cycle.start');
-  const logs = store.listPostSchedulerLogs(10);
-  const nextIdx = logs.length % CLINICAL_TOPICS.length;
-  const topic = CLINICAL_TOPICS[nextIdx];
+  let topic = pickNextTopic();
 
   try {
-    const gen = await generatePost({ topicId: topic.id });
+    let gen = await generatePost({ topicId: topic.id });
+    if (topic.id !== 'dc-vaccines' && /dendritic cell/i.test(gen.content)) {
+      log.warn('autopost.cycle.retry_topic_leak', { firstTopic: topic.id });
+      topic = pickNextTopic({ excludeIds: [topic.id, 'dc-vaccines', ...recentTopicIds()] });
+      gen = await generatePost({ topicId: topic.id });
+    }
     const pub = await publishPost({
       message: gen.content,
       pillar: gen.pillar,
       model: gen.model,
+      topicId: gen.topicId,
     });
-    return { ok: pub.ok, topic: topic.title, postId: pub.postId, error: pub.error };
+    return { ok: pub.ok, topic: gen.topicTitle, postId: pub.postId, error: pub.error };
   } catch (err) {
-    log.error('autopost.cycle.error', { error: err.message });
+    log.error('autopost.cycle.error', { error: err.message, topic: topic.id });
     store.logPostSchedulerAction({
       pillar: topic.pillar,
       status: 'failed',
       error: err.message,
+      topic_id: topic.id,
     });
     return { ok: false, error: err.message };
   }

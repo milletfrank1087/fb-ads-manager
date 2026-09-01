@@ -155,6 +155,7 @@ function postsManager() {
             message: this.draftText,
             pillar: this.draftPillar,
             model: this.draftModel,
+            topicId: this.customPrompt ? null : this.selectedTopicId,
           }),
         });
         const data = await res.json();
