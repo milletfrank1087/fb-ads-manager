@@ -52,7 +52,8 @@ export const safety = {
   },
 
   isAccountAllowed(accountId) {
-    return accountId === config.primaryAccountId;
+    const allowed = new Set([config.primaryAccountId, ...(config.additionalAccountIds || [])]);
+    return allowed.has(accountId);
   },
 
   preflight(endpoint, method = 'GET') {

@@ -51,6 +51,7 @@ export const config = Object.freeze({
 
   primaryAccountId: req('FB_PRIMARY_ACCOUNT_ID'),
   primaryAccountTz: opt('FB_PRIMARY_ACCOUNT_TIMEZONE', 'Europe/Kiev'),
+  additionalAccountIds: opt('FB_ADDITIONAL_ACCOUNT_IDS', '').split(',').map(s => s.trim()).filter(Boolean),
 
   proxyUrl,
   proxyHost,

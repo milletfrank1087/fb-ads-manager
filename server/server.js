@@ -147,11 +147,12 @@ app.get('/api/dashboard', (req, res) => {
   const level = (req.query.level || 'campaign').toString();
   const campaignId = req.query.campaign_id?.toString() || null;
   const adsetId = req.query.adset_id?.toString() || null;
+  const accountId = req.query.account_id?.toString() || null;
   if (!VALID_LEVELS.has(level)) {
     return res.status(400).json({ ok: false, error: 'invalid_level' });
   }
   try {
-    const payload = buildDashboardPayload(datePreset, { level, campaignId, adsetId });
+    const payload = buildDashboardPayload(datePreset, { level, campaignId, adsetId, accountId });
     let breadcrumb = null;
     if (level !== 'campaign' && campaignId) {
       breadcrumb = { campaignName: store.getCampaignName(campaignId) };
@@ -160,7 +161,7 @@ app.get('/api/dashboard', (req, res) => {
         if (ase) breadcrumb.adsetName = ase.name;
       }
     }
-    res.json({ ok: true, datePreset, level, campaignId, adsetId, breadcrumb, ...payload });
+    res.json({ ok: true, datePreset, level, campaignId, adsetId, accountId, breadcrumb, ...payload });
   } catch (err) {
     log.error('dashboard.error', { error: String(err.message || err) });
     res.status(500).json({ ok: false, error: 'dashboard_failed', message: String(err.message || err) });
@@ -183,18 +184,19 @@ app.post('/api/refresh', async (req, res) => {
   const level = (req.body?.level || 'campaign').toString();
   const campaignId = req.body?.campaign_id?.toString() || null;
   const adsetId = req.body?.adset_id?.toString() || null;
+  const accountId = req.body?.account_id?.toString() || null;
   const onlyHadDelivery = req.body?.only_had_delivery !== false;
   if (!VALID_LEVELS.has(level)) {
     return res.status(400).json({ ok: false, error: 'invalid_level' });
   }
-  log.info('refresh.request', { datePreset, level, campaignId, adsetId, onlyHadDelivery });
+  log.info('refresh.request', { datePreset, level, campaignId, adsetId, accountId, onlyHadDelivery });
   const result = level === 'campaign'
-    ? await refreshDashboard({ datePreset, onlyHadDelivery })
-    : await refreshLevel({ level, datePreset, campaignId, adsetId, onlyHadDelivery });
+    ? await refreshDashboard({ datePreset, accountId, onlyHadDelivery })
+    : await refreshLevel({ level, datePreset, accountId, campaignId, adsetId, onlyHadDelivery });
   if (!result.ok) {
     return res.status(result.error === 'kill_switch_on' || result.error === 'daily_cap_reached' ? 423 : 502).json(result);
   }
-  const payload = buildDashboardPayload(datePreset, { level, campaignId, adsetId });
+  const payload = buildDashboardPayload(datePreset, { level, campaignId, adsetId, accountId });
   let breadcrumb = null;
   if (level !== 'campaign' && campaignId) {
     breadcrumb = { campaignName: store.getCampaignName(campaignId) };
@@ -203,7 +205,7 @@ app.post('/api/refresh', async (req, res) => {
       if (ase) breadcrumb.adsetName = ase.name;
     }
   }
-  res.json({ ok: true, refresh: result, level, campaignId, adsetId, breadcrumb, ...payload });
+  res.json({ ok: true, refresh: result, level, campaignId, adsetId, accountId, breadcrumb, ...payload });
 });
 
 // ===================== Ad Management (/api/ads/*) =====================

@@ -16,7 +16,8 @@ import {
 export async function refreshDashboard({ datePreset = 'today', accountId, onlyHadDelivery = true } = {}) {
   const acct = accountId || config.primaryAccountId;
   if (!safety.isAccountAllowed(acct)) {
-    return { ok: false, error: 'account_not_allowed', message: `Only ${config.primaryAccountId} can be queried in this scope.` };
+    const allAllowed = [config.primaryAccountId, ...(config.additionalAccountIds || [])].join(', ');
+    return { ok: false, error: 'account_not_allowed', message: `Only these accounts can be queried: ${allAllowed}` };
   }
   if (!VALID_DATE_PRESETS.has(datePreset)) {
     return { ok: false, error: 'invalid_date_preset', message: `date_preset must be one of: ${[...VALID_DATE_PRESETS].join(', ')}` };
@@ -158,7 +159,8 @@ export async function refreshLevel({ level, datePreset = 'today', accountId, cam
   }
   const acct = accountId || config.primaryAccountId;
   if (!safety.isAccountAllowed(acct)) {
-    return { ok: false, error: 'account_not_allowed', message: `Only ${config.primaryAccountId} can be queried in this scope.` };
+    const allAllowed = [config.primaryAccountId, ...(config.additionalAccountIds || [])].join(', ');
+    return { ok: false, error: 'account_not_allowed', message: `Only these accounts can be queried: ${allAllowed}` };
   }
   if (!VALID_DATE_PRESETS.has(datePreset)) {
     return { ok: false, error: 'invalid_date_preset' };
@@ -234,8 +236,8 @@ export async function refreshLevel({ level, datePreset = 'today', accountId, cam
   return { ok: true, level, datePreset, httpCalls, entitiesCount: entityRows.length, insightsCount: normalized.length, elapsedMs };
 }
 
-export function buildDashboardPayload(datePreset = 'today', { level = 'campaign', campaignId, adsetId } = {}) {
-  const { account, rows, lastRun } = store.getLevelData(config.primaryAccountId, level, datePreset, { campaignId, adsetId });
+export function buildDashboardPayload(datePreset = 'today', { level = 'campaign', campaignId, adsetId, accountId } = {}) {
+  const { account, rows, lastRun } = store.getLevelData(accountId || config.primaryAccountId, level, datePreset, { campaignId, adsetId });
 
   let lastInsightsFetchedAt = null;
   let oldestInsightsFetchedAt = null;
