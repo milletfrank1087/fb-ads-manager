@@ -1621,7 +1621,8 @@ export const store = {
     const prefix = config.targetPageId ? `${config.targetPageId}_` : null;
     return this.getPostCatalog().filter((p) => {
       if (prefix && !String(p.id).startsWith(prefix)) return false;
-      return p.watched === 1 && String(p.effective_status || '').toUpperCase() === 'ACTIVE';
+      if (p.watched === 1) return true;
+      return String(p.effective_status || '').toUpperCase() === 'ACTIVE';
     });
   },
 
