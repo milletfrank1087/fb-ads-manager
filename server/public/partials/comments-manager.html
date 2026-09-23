@@ -111,9 +111,20 @@
 
         <!-- LEFT RAIL: post catalog (inbox only). On phones this collapses to a short, full-width strip above the list. -->
         <aside x-show="tab==='inbox'" class="cm-rail hidden md:flex w-full md:w-72 flex-shrink-0 bg-white border-b md:border-b-0 md:border-r border-gray-200 md:flex-col overflow-hidden max-h-44 md:max-h-none">
-          <div class="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
-            <span class="text-xs font-semibold uppercase tracking-wider text-meta-gray-600">Posts</span>
-            <span class="text-[11px] text-meta-gray-600" x-text="posts.length + ' posts'"></span>
+          <div class="px-3 py-2 border-b border-gray-100">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-semibold uppercase tracking-wider text-meta-gray-600">Posts</span>
+              <span class="text-[11px] text-meta-gray-600" x-text="filteredPosts.length + '/' + posts.length"></span>
+            </div>
+            <input type="text" x-model="postSearch" placeholder="Filter by name or ID…"
+              class="w-full text-xs border border-gray-300 rounded-md px-2 py-1 mb-1 focus:outline-none focus:ring-1 focus:ring-meta-blue">
+            <div class="flex items-center justify-between text-[10px]">
+              <span class="text-meta-gray-500"><b x-text="posts.filter(p=>p.watched).length"></b> watched</span>
+              <span class="flex gap-2">
+                <button @click="bulkWatch(true)" class="text-meta-blue hover:underline">Watch all</button>
+                <button @click="bulkWatch(false)" class="text-meta-gray-500 hover:underline">Unwatch all</button>
+              </span>
+            </div>
           </div>
           <div class="flex-1 overflow-y-auto scrollbar-thin cm-posts-list">
             <button @click="selectPost(null)" class="w-full text-left px-3 py-2 border-b border-gray-50 hover:bg-gray-50 flex items-center gap-2"
@@ -126,31 +137,38 @@
                 <div class="text-[11px] text-meta-gray-600"><span x-text="summary.total||0"></span> comments</div>
               </div>
             </button>
-            <template x-for="p in posts" :key="p.id">
-              <button @click="selectPost(p.id)" class="w-full text-left px-3 py-2 border-b border-gray-50 hover:bg-gray-50 flex items-start gap-2"
-                      :class="selectedPostId===p.id ? 'bg-blue-50' : ''">
-                <div class="relative flex-shrink-0">
-                  <img x-show="p.full_picture_url" :src="p.full_picture_url" class="w-9 h-9 rounded object-cover bg-gray-100" referrerpolicy="no-referrer" @error="$el.style.display='none'">
-                  <div x-show="!p.full_picture_url" class="w-9 h-9 rounded bg-gray-100 flex items-center justify-center text-meta-gray-600 text-[10px]">no img</div>
-                  <span x-show="newCounts[p.id] > 0" class="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center" x-text="newCounts[p.id]"></span>
-                </div>
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-1">
-                    <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" :class="p.effective_status==='ACTIVE'?'bg-green-500':'bg-gray-300'"></span>
-                    <span class="text-sm font-medium truncate" x-text="p.ad_name || 'Post'"></span>
+            <template x-for="p in filteredPosts" :key="p.id">
+              <div class="w-full flex items-start border-b border-gray-50 hover:bg-gray-50"
+                   :class="selectedPostId===p.id ? 'bg-blue-50' : ''">
+                <label class="flex items-center pl-2 pt-2.5 cursor-pointer" @click.stop
+                       :title="p.watched ? 'Watched — synced during moderation runs' : 'Unwatched — skipped during sync'">
+                  <input type="checkbox" :checked="p.watched" @change="toggleWatched(p.id, $event.target.checked)"
+                         class="w-3.5 h-3.5 rounded border-gray-300 text-meta-blue focus:ring-meta-blue cursor-pointer">
+                </label>
+                <button @click="selectPost(p.id)" class="flex-1 text-left px-2 py-2 flex items-start gap-2">
+                  <div class="relative flex-shrink-0">
+                    <img x-show="p.full_picture_url" :src="p.full_picture_url" class="w-9 h-9 rounded object-cover bg-gray-100" referrerpolicy="no-referrer" @error="$el.style.display='none'">
+                    <div x-show="!p.full_picture_url" class="w-9 h-9 rounded bg-gray-100 flex items-center justify-center text-meta-gray-600 text-[10px]">no img</div>
+                    <span x-show="newCounts[p.id] > 0" class="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center" x-text="newCounts[p.id]"></span>
                   </div>
-                  <div class="text-[11px] text-meta-gray-600 truncate" x-text="p.campaign_name || p.message || p.id"></div>
-                  <div class="flex items-center gap-1.5 mt-1 text-[10px]">
-                    <span class="text-meta-gray-600"><b x-text="p.total||0"></b>c</span>
-                    <span x-show="p.suggest_delete>0" class="text-red-600"><b x-text="p.suggest_delete"></b> del</span>
-                    <span x-show="p.hidden>0" class="text-meta-gray-600"><b x-text="p.hidden"></b> hid</span>
-                    <span x-show="p.unanalyzed>0" class="text-blue-600"><b x-text="p.unanalyzed"></b> new</span>
-                    <span class="flex-1"></span>
-                    <span class="text-meta-gray-400" :title="p.last_comment_synced_at ? new Date(p.last_comment_synced_at).toLocaleString() : 'Not synced yet'"
-                          x-text="(nowTick, p.last_comment_synced_at ? timeAgo(p.last_comment_synced_at) : 'not synced')"></span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1">
+                      <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" :class="p.effective_status==='ACTIVE'?'bg-green-500':'bg-gray-300'"></span>
+                      <span class="text-sm font-medium truncate" :class="p.watched ? '' : 'opacity-50'" x-text="p.ad_name || 'Post'"></span>
+                    </div>
+                    <div class="text-[11px] text-meta-gray-600 truncate" x-text="p.campaign_name || p.message || p.id"></div>
+                    <div class="flex items-center gap-1.5 mt-1 text-[10px]">
+                      <span class="text-meta-gray-600"><b x-text="p.total||0"></b>c</span>
+                      <span x-show="p.suggest_delete>0" class="text-red-600"><b x-text="p.suggest_delete"></b> del</span>
+                      <span x-show="p.hidden>0" class="text-meta-gray-600"><b x-text="p.hidden"></b> hid</span>
+                      <span x-show="p.unanalyzed>0" class="text-blue-600"><b x-text="p.unanalyzed"></b> new</span>
+                      <span class="flex-1"></span>
+                      <span class="text-meta-gray-400" :title="p.last_comment_synced_at ? new Date(p.last_comment_synced_at).toLocaleString() : 'Not synced yet'"
+                            x-text="(nowTick, p.last_comment_synced_at ? timeAgo(p.last_comment_synced_at) : 'not synced')"></span>
+                    </div>
                   </div>
-                </div>
-              </button>
+                </button>
+              </div>
             </template>
             <div x-show="!posts.length" class="px-3 py-8 text-center text-xs text-meta-gray-600">
               No posts yet. Click <b class="text-meta-blue">Sync all</b> to discover ad posts and pull comments.

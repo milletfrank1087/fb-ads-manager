@@ -428,9 +428,15 @@ export async function syncAll({ analyze = true, applyRules = true } = {}) {
  * Reuses the same batched 2-pass fetch + the same persistence/reconcile path.
  */
 export async function syncCommentsOnly({ analyze = true, applyRules = true, activeOnly = false } = {}) {
-  const prefix = config.targetPageId ? `${config.targetPageId}_` : null;
-  let posts = store.getPostCatalog()
-    .filter((p) => !prefix || String(p.id).startsWith(prefix));
+  const watched = store.getWatchedPosts();
+  let posts;
+  if (watched.length) {
+    posts = watched;
+  } else {
+    const prefix = config.targetPageId ? `${config.targetPageId}_` : null;
+    posts = store.getPostCatalog()
+      .filter((p) => !prefix || String(p.id).startsWith(prefix));
+  }
   if (activeOnly) {
     posts = posts.filter((p) => String(p.effective_status || '').toUpperCase() === 'ACTIVE');
   }

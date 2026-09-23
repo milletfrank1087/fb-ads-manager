@@ -26,6 +26,7 @@ function commentsManager() {
     posts: [],
     selectedPostId: null,
     newCounts: {},
+    postSearch: '',
 
     rows: [],
     total: 0,
@@ -63,6 +64,47 @@ function commentsManager() {
 
     get blockedActive() {
       return this.blocked.filter((b) => !b.unblocked_at).length;
+    },
+
+    get filteredPosts() {
+      const q = this.postSearch.trim().toLowerCase();
+      if (!q) return this.posts;
+      return this.posts.filter((p) =>
+        (p.ad_name || '').toLowerCase().includes(q) ||
+        (p.campaign_name || '').toLowerCase().includes(q) ||
+        (p.id || '').toLowerCase().includes(q) ||
+        (p.message || '').toLowerCase().includes(q)
+      );
+    },
+
+    async toggleWatched(postId, watched) {
+      const p = this.posts.find((x) => x.id === postId);
+      if (p) p.watched = watched ? 1 : 0;
+      try {
+        await this.api(`/api/cm/posts/${encodeURIComponent(postId)}/watched`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ watched }),
+        });
+      } catch (e) {
+        if (p) p.watched = watched ? 0 : 1;
+        this.toastError('Watch toggle failed', String(e));
+      }
+    },
+
+    async bulkWatch(watched) {
+      const visible = this.filteredPosts;
+      const postIds = visible.map((p) => p.id);
+      for (const p of visible) p.watched = watched ? 1 : 0;
+      try {
+        await this.api('/api/cm/posts/watched/bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ watched, postIds }),
+        });
+        this.toastInfo(watched ? 'Watched' : 'Unwatched', `${postIds.length} posts updated`);
+      } catch (e) {
+        this.toastError('Bulk watch failed', String(e));
+        await this.loadState();
+      }
     },
 
     init() {

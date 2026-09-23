@@ -151,7 +151,7 @@ export async function runCmAuto({ trigger = 'scheduled' } = {}) {
       applyRules: true,
       analyzePosts: activePosts,
     });
-    httpCalls += sync.batchCalls || 0;
+    httpCalls += sync.apiCalls || sync.batchCalls || 0;
     if (sync.error) notes.push(`sync_failed:${sync.error}`);
 
     const deleteResult = await deleteFlaggedComments(runId, postIds, config.cmAutoMaxDeletesPerRun);

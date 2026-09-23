@@ -733,6 +733,27 @@ app.post('/api/cm/auto-run/manual', ah(async (req, res) => {
   res.json(result);
 }));
 
+app.post('/api/cm/posts/:postId/watched', ah(async (req, res) => {
+  const watched = req.body?.watched;
+  if (typeof watched !== 'boolean') return res.status(400).json({ ok: false, error: 'watched must be boolean' });
+  const changed = store.setPostWatched(req.params.postId, watched);
+  if (!changed) return res.status(404).json({ ok: false, error: 'post_not_found' });
+  res.json({ ok: true, postId: req.params.postId, watched });
+}));
+
+app.post('/api/cm/posts/watched/bulk', ah(async (req, res) => {
+  const { watched, postIds } = req.body || {};
+  if (typeof watched !== 'boolean') return res.status(400).json({ ok: false, error: 'watched must be boolean' });
+  let changed;
+  if (Array.isArray(postIds)) {
+    changed = 0;
+    for (const id of postIds) changed += store.setPostWatched(id, watched);
+  } else {
+    changed = store.setAllPostsWatched(watched);
+  }
+  res.json({ ok: true, watched, changed });
+}));
+
 app.post('/api/cm/posts/:postId/refresh', ah(async (req, res) => {
   const post = store.getAdPost(req.params.postId);
   const result = await cmSyncPostComments(req.params.postId, post?.ad_id || null);

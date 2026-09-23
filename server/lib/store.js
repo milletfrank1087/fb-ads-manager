@@ -247,7 +247,8 @@ CREATE TABLE IF NOT EXISTS ad_posts (
   ai_model TEXT,
   ai_analyzed_at TEXT,
   last_comment_synced_at TEXT,
-  last_synced_at TEXT
+  last_synced_at TEXT,
+  watched INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_ad_posts_status ON ad_posts(effective_status);
 
@@ -433,6 +434,7 @@ for (const migration of [
   'ALTER TABLE comments ADD COLUMN can_reply_privately INTEGER DEFAULT 0',
   'ALTER TABLE comments ADD COLUMN first_seen_at TEXT',
   'ALTER TABLE post_scheduler_log ADD COLUMN topic_id TEXT',
+  'ALTER TABLE ad_posts ADD COLUMN watched INTEGER DEFAULT 0',
 ]) {
   try { db.exec(migration); } catch (err) {
     if (!/duplicate column name/i.test(String(err.message || err))) {
@@ -1595,13 +1597,31 @@ export const store = {
     return db.prepare('UPDATE findings SET status = ? WHERE id = ?').run(status, id).changes;
   },
 
+  // ---------- Post watch list ----------
+
+  setPostWatched(postId, watched) {
+    return db.prepare('UPDATE ad_posts SET watched = ? WHERE id = ?').run(watched ? 1 : 0, postId).changes;
+  },
+
+  setAllPostsWatched(watched) {
+    return db.prepare('UPDATE ad_posts SET watched = ?').run(watched ? 1 : 0).changes;
+  },
+
+  getWatchedPosts() {
+    const prefix = config.targetPageId ? `${config.targetPageId}_` : null;
+    return this.getPostCatalog().filter((p) => {
+      if (prefix && !String(p.id).startsWith(prefix)) return false;
+      return p.watched === 1;
+    });
+  },
+
   // ---------- Comments Manager: automated runs ----------
 
   getActiveAdPosts() {
     const prefix = config.targetPageId ? `${config.targetPageId}_` : null;
     return this.getPostCatalog().filter((p) => {
       if (prefix && !String(p.id).startsWith(prefix)) return false;
-      return String(p.effective_status || '').toUpperCase() === 'ACTIVE';
+      return p.watched === 1 && String(p.effective_status || '').toUpperCase() === 'ACTIVE';
     });
   },
 
