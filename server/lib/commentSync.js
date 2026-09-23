@@ -460,50 +460,63 @@ export async function syncPostsComments(posts, { analyze = true, applyRules = tr
 
   store.markSyncStarted();
 
-  const commentFields = `comments.filter(stream).order(chronological).limit(${FIRST_PAGE_LIMIT}){${COMMENT_FIELDS}}`;
+  const edgeFields = `id,message,from,created_time,like_count,comment_count,parent,attachment`;
   const acc = new Map();
   for (const p of posts) acc.set(p.id, { post: p, comments: [], next: null, pages: 0, complete: false, failed: false });
 
-  let apiCalls = 0;
+  let batchCalls = 0;
 
-  // Individual GET per post — batch POST with page tokens silently strips
-  // the comments field from sub-responses (Meta Graph API regression, Sep 2026).
-  for (const p of posts) {
-    const entry = acc.get(p.id);
-    try {
-      const res = await fb.get(`/${p.id}`, { fields: commentFields }, 'GET:/post/comments', { tokenKind: 'page' });
-      apiCalls += 1;
-      if (!res.ok) { entry.complete = true; entry.failed = true; continue; }
-      const cdata = res.body?.comments?.data || [];
+  // ---- Pass 1: first comment page per post, batched via /comments edge ----
+  for (const group of chunk(posts, config.cmBatchSize)) {
+    const ops = group.map((p, i) => ({
+      method: 'GET', name: `p${i}`,
+      relative_url: `${p.id}/comments?fields=${encodeURIComponent(edgeFields)}&filter=stream&order=chronological&limit=${FIRST_PAGE_LIMIT}`,
+    }));
+    const res = await fb.batch(ops, 'GET:/cm/comments_batch', { tokenKind: 'page' });
+    batchCalls += 1;
+    if (!res.ok) {
+      log.error('cm.sync_comments.batch_failed', { error: res.error?.message || res.error || res.message });
+      return { commentsOnly: true, postsSynced: 0, comments: 0, batchCalls, error: 'batch_failed', elapsedMs: Date.now() - startedAt };
+    }
+    group.forEach((p, i) => {
+      const sub = res.parsed?.[`p${i}`];
+      const entry = acc.get(p.id);
+      if (!sub || !sub.ok || !sub.body) { entry.complete = true; entry.failed = true; return; }
+      const cdata = sub.body?.data || [];
       entry.comments.push(...cdata);
-      entry.next = res.body?.comments?.paging?.next || null;
+      entry.next = sub.body?.paging?.next || null;
       entry.pages = 1;
       entry.complete = !entry.next;
-    } catch (err) {
-      log.warn('cm.sync_comments.post_failed', { postId: p.id, error: String(err.message || err) });
-      entry.complete = true;
-      entry.failed = true;
-    }
+    });
   }
 
-  // Paginate remaining comment pages per post
+  // ---- Pass 2..maxPages: paginate remaining comment pages, batched ----
   let page = 1;
   while (page < config.cmMaxCommentPagesPerPost) {
     const pending = [...acc.values()].filter((e) => e.next && !e.complete);
     if (!pending.length) break;
     page += 1;
-    for (const e of pending) {
-      const rel = toRelativeUrl(e.next);
-      if (!rel) { e.complete = true; continue; }
-      try {
-        const r = await fb.get(`/${rel}`, null, 'GET:/post/comments', { tokenKind: 'page' });
-        apiCalls += 1;
-        if (!r.ok) { e.complete = true; continue; }
-        e.comments.push(...(r.body?.data || []));
-        e.next = r.body?.paging?.next || null;
-        e.pages += 1;
-        if (!e.next) e.complete = true;
-      } catch { e.complete = true; }
+    for (const group of chunk(pending, config.cmBatchSize)) {
+      const ops = [];
+      const map = [];
+      group.forEach((e, i) => {
+        const rel = toRelativeUrl(e.next);
+        if (!rel) { e.complete = true; return; }
+        ops.push({ method: 'GET', name: `c${i}`, relative_url: rel });
+        map.push({ name: `c${i}`, entry: e });
+      });
+      if (!ops.length) continue;
+      const res = await fb.batch(ops, 'GET:/cm/comments_page', { tokenKind: 'page' });
+      batchCalls += 1;
+      if (!res.ok) { log.error('cm.sync_comments.page_batch_failed', {}); break; }
+      for (const { name, entry } of map) {
+        const sub = res.parsed?.[name];
+        if (!sub || !sub.ok || !sub.body) { entry.complete = true; continue; }
+        entry.comments.push(...(sub.body?.data || []));
+        entry.next = sub.body?.paging?.next || null;
+        entry.pages += 1;
+        if (!entry.next) entry.complete = true;
+      }
     }
   }
 
@@ -540,7 +553,7 @@ export async function syncPostsComments(posts, { analyze = true, applyRules = tr
   const elapsedMs = Date.now() - startedAt;
   const result = {
     commentsOnly: true, postsSynced: posts.length, postsFailed: failed,
-    comments: totalComments, reconciled: reconciledTotal, batchCalls: 0, apiCalls,
+    comments: totalComments, reconciled: reconciledTotal, batchCalls,
     autoHidden, analyzed, analysisFailed, analyzerEnabled: analyzerEnabled(), elapsedMs,
   };
   log.info('cm.sync_comments.done', result);

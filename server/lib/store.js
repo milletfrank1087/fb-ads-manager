@@ -1725,9 +1725,10 @@ export const store = {
     });
   },
 
-  getSuggestDeleteComments({ postIds = [], limit = 20 } = {}) {
+  getSuggestDeleteComments({ postIds = [], limit = 20, minSeverity = 4 } = {}) {
     if (!postIds.length) return [];
     const lim = Math.max(1, Math.min(100, Number(limit) || 20));
+    const sev = Math.max(0, Math.min(10, Number(minSeverity) || 5));
     const placeholders = postIds.map(() => '?').join(',');
     return db.prepare(`
       SELECT c.id, c.post_id, c.message, p.campaign_name,
@@ -1736,11 +1737,12 @@ export const store = {
       JOIN comment_analyses a ON a.comment_id = c.id
       LEFT JOIN ad_posts p ON p.id = c.post_id
       WHERE c.deleted = 0 AND c.is_hidden = 0
-        AND a.recommended_action IN ('delete', 'review')
+        AND a.recommended_action = 'delete'
+        AND a.severity >= ?
         AND c.post_id IN (${placeholders})
       ORDER BY a.severity DESC, c.created_time DESC
       LIMIT ${lim}
-    `).all(...postIds);
+    `).all(sev, ...postIds);
   },
 
   upsertPagePost(p) {
