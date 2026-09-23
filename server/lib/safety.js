@@ -148,7 +148,7 @@ export const safety = {
       dailyCallsUsed: dailyCalls,
       dailyCallDay: day,
       cooldowns: store.getAllCooldowns(),
-      proxy: `${config.proxyHost}:${config.proxyPort}`,
+      proxy: config.proxyUrl ? `${config.proxyHost}:${config.proxyPort}` : 'none (direct)',
       graphVersion: config.graphVersion,
       circuitBreakerThreshold: config.circuitBreakerThreshold,
       circuitBreakerCooldownSeconds: Math.round(config.circuitBreakerCooldownMs / 1000),

@@ -1073,7 +1073,7 @@ const server = app.listen(config.port, () => {
   banner('FB Ads Manager — GFM Greece Dashboard', [
     `URL          http://localhost:${config.port}`,
     `Account      ${config.primaryAccountId} (tz: ${config.primaryAccountTz})`,
-    `Graph API    ${config.graphVersion}  via proxy ${config.proxyHost}:${config.proxyPort}`,
+    `Graph API    ${config.graphVersion}  ${config.proxyUrl ? `via proxy ${config.proxyHost}:${config.proxyPort}` : 'direct (no proxy)'}`,
     `Readonly     ${snap.readonly ? 'YES (writes blocked)' : 'NO (writes allowed!)'}`,
     `KillSwitch   ${snap.killSwitch ? 'ENGAGED (no calls will go out)' : 'released'}`,
     `Daily cap    ${snap.dailyCallsUsed} / ${snap.dailyCallCap} calls (day ${snap.dailyCallDay})`,

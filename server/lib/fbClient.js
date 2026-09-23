@@ -7,19 +7,24 @@ import { safety } from './safety.js';
 import { store } from './store.js';
 import { pageToken } from './pageToken.js';
 
-const proxyAgent = new HttpsProxyAgent(config.proxyUrl);
+const proxyAgent = config.proxyUrl ? new HttpsProxyAgent(config.proxyUrl) : null;
 
-const http = axios.create({
+const httpOpts = {
   baseURL: config.graphBase,
   timeout: config.timeoutMs,
-  httpsAgent: proxyAgent,
-  proxy: false,
   validateStatus: () => true,
   headers: {
     'User-Agent': config.userAgent,
     'Accept': 'application/json',
   },
-});
+};
+if (proxyAgent) {
+  httpOpts.httpsAgent = proxyAgent;
+  httpOpts.proxy = false;
+}
+const http = axios.create(httpOpts);
+
+log.info('fb.client.init', { proxy: proxyAgent ? `${config.proxyHost}:${config.proxyPort}` : 'none (direct)' });
 
 let lastCallAt = 0;
 let callCounter = 0;
@@ -388,7 +393,7 @@ export const fb = {
 
   meta() {
     return {
-      proxy: `${config.proxyHost}:${config.proxyPort}`,
+      proxy: config.proxyUrl ? `${config.proxyHost}:${config.proxyPort}` : 'none (direct)',
       version: config.graphVersion,
       tokenMasked: maskToken(config.systemToken),
       readonly: config.readonly,

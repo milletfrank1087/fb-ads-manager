@@ -34,11 +34,13 @@ function boolOpt(name, fallback) {
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
-const proxyUser = encodeURIComponent(req('PROXY_USER'));
-const proxyPass = encodeURIComponent(req('PROXY_PASS'));
-const proxyHost = req('PROXY_HOST');
-const proxyPort = req('PROXY_PORT');
-const proxyUrl = `http://${proxyUser}:${proxyPass}@${proxyHost}:${proxyPort}`;
+const proxyHost = opt('PROXY_HOST');
+const proxyPort = opt('PROXY_PORT');
+const proxyUser = opt('PROXY_USER');
+const proxyPass = opt('PROXY_PASS');
+const proxyUrl = proxyHost
+  ? `http://${encodeURIComponent(proxyUser)}:${encodeURIComponent(proxyPass)}@${proxyHost}:${proxyPort}`
+  : null;
 
 const graphVersion = opt('GRAPH_API_VERSION', 'v25.0');
 const graphBase = `https://graph.facebook.com/${graphVersion}`;
