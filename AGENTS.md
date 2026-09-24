@@ -4,7 +4,7 @@ Rules for every agent and script in this repo. Read before touching code or call
 
 ## What this is
 
-A single-operator app that watches chosen Facebook posts on Page `FB_TARGET_PAGE_ID`, fetches new comments on a schedule, has an LLM classify them, and hides/deletes them according to a per-category policy. Nothing else: no ads dashboard, no advisor, no page posting (removed 2026-09-24).
+A single-operator app that watches chosen Facebook posts on Page `FB_TARGET_PAGE_ID`, fetches new comments on a schedule, has an LLM classify them, and hides/deletes them according to a per-category policy. No ads UI, no advisor, no page posting (removed 2026-09-24) — except the read-only ads-insights API below, which another app depends on.
 
 ## Flow
 
@@ -15,6 +15,15 @@ A single-operator app that watches chosen Facebook posts on Page `FB_TARGET_PAGE
    - Apply the policy to **candidates only**: reviewed, not deleted, not by the Page, never handled by a human, not already processed, and posted **after** `tracked_at`. Older comments are only acted on via the per-post "Review older" button.
    - Log every action (`actions`) and the run (`runs`).
 3. **Policy** (`settings.automod.policy`): per category `{action: off|hide|delete, minSeverity, requireAiDelete}`. Defaults reproduce the pre-rewrite rule: delete when the AI recommends `delete` at severity ≥ 4 for hate/harassment/threat/spam/scam/AI/fake accusations.
+
+## Ads insights API (do not remove)
+
+`GET /api/dashboard` and `POST /api/refresh` (`lib/adInsights.js`) feed Meta spend into the **GFM campaign app's profit cockpit** (`campaign/lib/ads-manager.js` in the GFM repo, via `ADS_MANAGER_URL`). Removing or reshaping them silently freezes that dashboard's ad spend — this happened on 2026-09-24.
+
+- Contract: `?date_preset=&level=campaign&account_id=act_…` → `{ ok, account: {id}, rows: [campaign fields + spend, reach, impressions, cpm, inline_link_clicks, cost_per_inline_link_click, link_clicks, purchases_total, purchase_value_total, purchase_roas_total, cost_per_purchase, insights_fetched_at], campaigns: [...] }`. `account_id` keeps the `act_` prefix.
+- Accounts: `FB_PRIMARY_ACCOUNT_ID` + `FB_ADDITIONAL_ACCOUNT_IDS` (allowlist; others get 400).
+- One Graph batch call per refresh covers every account; results are cached in memory and reused for 5 min (today), 20 min (yesterday), 30 min (last_7d), 60 min (others).
+- Counted against its own daily cap `FB_ADS_MAX_DAILY_CALLS` (default 600), separate from `FB_MAX_DAILY_CALLS`, so ads polling can never block moderation. Kill switch and endpoint cooldowns still apply.
 
 ## Non-negotiable rules
 
@@ -40,6 +49,7 @@ server/lib/posts.js       post discovery + paste-to-track
 server/lib/comments.js    comment normalisation + hide/unhide/delete/like/reply/block (audited)
 server/lib/analyzer.js    OpenRouter classification, post context, reply drafts
 server/lib/automation.js  settings/policy, fetch → review → act pipeline, scheduler
+server/lib/adInsights.js  read-only campaign insights for the GFM profit cockpit (/api/dashboard, /api/refresh)
 server/public/            index.html + app.js (Alpine + Tailwind CDN)
 ```
 

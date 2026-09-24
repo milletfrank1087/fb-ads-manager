@@ -65,6 +65,9 @@ export const config = Object.freeze({
   allowModeration: boolOpt('FB_ALLOW_COMMENT_MODERATION', false),
   killSwitch: boolOpt('FB_KILL_SWITCH', false),
   maxDailyCalls: intOpt('FB_MAX_DAILY_CALLS', 500),
+  // Separate budget for the ads-insights endpoints the campaign app polls (lib/adInsights.js).
+  adsMaxDailyCalls: intOpt('FB_ADS_MAX_DAILY_CALLS', 600),
+  adAccountIds: [opt('FB_PRIMARY_ACCOUNT_ID'), ...opt('FB_ADDITIONAL_ACCOUNT_IDS').split(',')].map((s) => s.trim()).filter(Boolean),
   circuitBreakerThreshold: intOpt('FB_CIRCUIT_BREAKER_THRESHOLD', 2),
   circuitBreakerCooldownMs: intOpt('FB_CIRCUIT_BREAKER_COOLDOWN_SECONDS', 300) * 1000,
 

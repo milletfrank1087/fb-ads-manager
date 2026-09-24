@@ -13,7 +13,9 @@ function todayInTz() {
   }
 }
 
-let runtimeKillSwitch = config.killSwitch || store.getSetting('kill_switch', false) === true;
+const counterKey = (budget) => (budget === 'ads' ? `ads:${todayInTz()}` : todayInTz());
+
+let runtimeKillSwitch =config.killSwitch || store.getSetting('kill_switch', false) === true;
 
 export const safety = {
   isKillSwitchActive: () => runtimeKillSwitch,
@@ -27,15 +29,17 @@ export const safety = {
   canModerate: () => config.allowModeration && !runtimeKillSwitch,
 
   // kind: 'READ' for GETs / read-only batches, 'WRITE' for anything that changes Facebook.
-  preflight(endpoint, kind) {
+  // budget: 'default' (moderation) or 'ads' (insights for the campaign app) — separate daily
+  // caps, so ads polling can never starve moderation.
+  preflight(endpoint, kind, budget = 'default') {
     if (runtimeKillSwitch) return { ok: false, error: 'kill_switch_on', message: 'Kill switch is on. No Meta calls are made.' };
     if (kind === 'WRITE' && !config.allowModeration) {
       return { ok: false, error: 'moderation_disabled', message: 'Writes are disabled. Set FB_ALLOW_COMMENT_MODERATION=1.' };
     }
-    const day = todayInTz();
-    const used = store.getDailyCallCount(day);
-    if (used >= config.maxDailyCalls) {
-      return { ok: false, error: 'daily_cap_reached', message: `Daily cap of ${config.maxDailyCalls} Meta calls reached. Resets at midnight (${config.timezone}).` };
+    const cap = budget === 'ads' ? config.adsMaxDailyCalls : config.maxDailyCalls;
+    const used = store.getDailyCallCount(counterKey(budget));
+    if (used >= cap) {
+      return { ok: false, error: 'daily_cap_reached', message: `Daily cap of ${cap} ${budget === 'ads' ? 'ads ' : ''}Meta calls reached. Resets at midnight (${config.timezone}).` };
     }
     // The row also carries the consecutive-error count, so it is only cleared on success.
     const cd = store.getCooldown(endpoint);
@@ -46,8 +50,8 @@ export const safety = {
     return { ok: true };
   },
 
-  recordCall() {
-    store.incrementDailyCallCount(todayInTz());
+  recordCall(budget = 'default') {
+    store.incrementDailyCallCount(counterKey(budget));
   },
 
   recordSuccess(endpoint) {
@@ -74,6 +78,8 @@ export const safety = {
       proxy: config.proxyUrl ? `${config.proxyHost}:${config.proxyPort}` : null,
       dailyCallsUsed: store.getDailyCallCount(day),
       dailyCallCap: config.maxDailyCalls,
+      adsDailyCallsUsed: store.getDailyCallCount(counterKey('ads')),
+      adsDailyCallCap: config.adsMaxDailyCalls,
       cooldowns: store.activeCooldowns(),
     };
   },

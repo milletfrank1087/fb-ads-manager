@@ -76,9 +76,9 @@ async function resolveToken(tokenKind) {
   return r.ok ? { ok: true, token: r.token } : { ok: false, error: 'page_token_unavailable', message: r.error };
 }
 
-async function request(method, path, { params, data, endpoint, kind = 'READ', tokenKind = 'sysuser', retried = false } = {}) {
+async function request(method, path, { params, data, endpoint, kind = 'READ', tokenKind = 'sysuser', budget = 'default', retried = false } = {}) {
   const ep = endpoint || `${method}:${path}`;
-  const pre = safety.preflight(ep, kind);
+  const pre = safety.preflight(ep, kind, budget);
   if (!pre.ok) {
     log.warn('fb.blocked', { endpoint: ep, error: pre.error });
     return { ok: false, blocked: true, ...pre };
@@ -103,7 +103,7 @@ async function request(method, path, { params, data, endpoint, kind = 'READ', to
   let elapsedMs = 0;
   for (let attempt = 0; ; attempt += 1) {
     await throttleSlot();
-    safety.recordCall();
+    safety.recordCall(budget);
     callCounter += 1;
     const t0 = Date.now();
     try {
@@ -129,7 +129,7 @@ async function request(method, path, { params, data, endpoint, kind = 'READ', to
     const e = body.error;
     if (tokenKind === 'page' && Number(e.code) === 190 && !retried) {
       pageToken.invalidate(`190 on ${ep}`);
-      return request(method, path, { params, data, endpoint, kind, tokenKind, retried: true });
+      return request(method, path, { params, data, endpoint, kind, tokenKind, budget, retried: true });
     }
     safety.recordError(ep, { code: e.code, subcode: e.error_subcode, httpStatus: res.status, etaMinutes: usage.eta, message: e.message });
     log.error('fb.api_error', { endpoint: ep, http: res.status, code: e.code, subcode: e.error_subcode, message: (e.message || '').slice(0, 160), elapsedMs });
@@ -148,8 +148,8 @@ async function request(method, path, { params, data, endpoint, kind = 'READ', to
 }
 
 export const fb = {
-  get(path, params, endpoint, { tokenKind } = {}) {
-    return request('GET', path, { params, endpoint, kind: 'READ', tokenKind });
+  get(path, params, endpoint, { tokenKind, budget } = {}) {
+    return request('GET', path, { params, endpoint, kind: 'READ', tokenKind, budget });
   },
 
   // Writes always use the Page token and are gated by FB_ALLOW_COMMENT_MODERATION.
@@ -158,7 +158,7 @@ export const fb = {
   },
 
   // Read-only batch (GET sub-ops only). Returns parsed[name] = { ok, code, body }.
-  async batch(ops, endpoint, { tokenKind } = {}) {
+  async batch(ops, endpoint, { tokenKind, budget } = {}) {
     if (!ops.length) return { ok: true, parsed: {} };
     if (ops.some((o) => (o.method || 'GET') !== 'GET')) throw new Error('fb.batch is read-only');
     const parsed = {};
@@ -166,7 +166,7 @@ export const fb = {
       const chunk = ops.slice(i, i + 50);
       const res = await request('POST', '/', {
         data: { batch: chunk.map((o) => ({ method: 'GET', relative_url: o.relative_url.replace(/^\/+/, ''), name: o.name })) },
-        endpoint, kind: 'READ', tokenKind,
+        endpoint, kind: 'READ', tokenKind, budget,
       });
       if (!res.ok) return res;
       const items = Array.isArray(res.body) ? res.body : [];

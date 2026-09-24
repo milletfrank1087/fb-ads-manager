@@ -10,6 +10,7 @@ import * as comments from './lib/comments.js';
 import { discover, addManual } from './lib/posts.js';
 import { analyzerEnabled, suggestReply } from './lib/analyzer.js';
 import { getSettings, saveSettings, runNow, isRunning, schedulerState, startScheduler } from './lib/automation.js';
+import * as adInsights from './lib/adInsights.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -155,6 +156,32 @@ app.get('/api/runs/:id', (req, res) => {
 });
 
 app.get('/api/actions', (req, res) => res.json({ ok: true, actions: store.listActions({ limit: parseInt(req.query.limit, 10) || 100 }) }));
+
+// ---------- ads insights (read-only; consumed by the GFM campaign app's profit cockpit) ----------
+
+function adsParams(src) {
+  const preset = String(src?.date_preset || 'today');
+  const accountId = String(src?.account_id || adInsights.primaryAccountId() || '');
+  const level = String(src?.level || 'campaign');
+  if (level !== 'campaign') return { error: 'invalid_level', message: 'Only level=campaign is supported.' };
+  if (!adInsights.VALID_DATE_PRESETS.has(preset)) return { error: 'invalid_date_preset' };
+  if (!adInsights.isAllowedAccount(accountId)) return { error: 'account_not_allowed', message: 'Set FB_PRIMARY_ACCOUNT_ID / FB_ADDITIONAL_ACCOUNT_IDS.' };
+  return { preset, accountId };
+}
+
+app.get('/api/dashboard', ah(async (req, res) => {
+  const p = adsParams(req.query);
+  if (p.error) return res.status(400).json({ ok: false, ...p });
+  const r = await adInsights.dashboard(p.accountId, p.preset);
+  res.status(r.ok ? 200 : 502).json(r);
+}));
+
+app.post('/api/refresh', ah(async (req, res) => {
+  const p = adsParams(req.body);
+  if (p.error) return res.status(400).json({ ok: false, ...p });
+  const r = await adInsights.refresh(p.preset);
+  res.status(r.ok ? 200 : r.error === 'daily_cap_reached' || r.error === 'kill_switch_on' ? 423 : 502).json(r);
+}));
 
 // ---------- blocked users ----------
 
