@@ -22,6 +22,7 @@ A single-operator app that watches chosen Facebook posts on Page `FB_TARGET_PAGE
 
 - Contract: `?date_preset=&level=campaign&account_id=act_…` → `{ ok, account: {id}, rows: [campaign fields + spend, reach, impressions, cpm, inline_link_clicks, cost_per_inline_link_click, link_clicks, purchases_total, purchase_value_total, purchase_roas_total, cost_per_purchase, insights_fetched_at], campaigns: [...] }`. `account_id` keeps the `act_` prefix.
 - Accounts: `FB_PRIMARY_ACCOUNT_ID` + `FB_ADDITIONAL_ACCOUNT_IDS` (allowlist; others get 400).
+- Presets are **Europe/Athens calendar days ending today** (`last_7d` = 6 previous days + today), matching the cockpit's payment ranges, not Meta's `date_preset`. Accounts whose timezone differs from Athens (e.g. the Italy account, fixed UTC+2) are fetched with the hourly breakdown (`time_increment=1`) and re-bucketed; the response carries `range: {since, until, timezone}`.
 - One Graph batch call per refresh covers every account; results are cached in memory and reused for 5 min (today), 20 min (yesterday), 30 min (last_7d), 60 min (others).
 - Counted against its own daily cap `FB_ADS_MAX_DAILY_CALLS` (default 600), separate from `FB_MAX_DAILY_CALLS`, so ads polling can never block moderation. Kill switch and endpoint cooldowns still apply.
 
