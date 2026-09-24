@@ -1,1495 +1,485 @@
+const CATEGORIES = {
+  hate: { label: 'Hate', cls: 'bg-red-100 text-red-800' },
+  harassment: { label: 'Harassment', cls: 'bg-orange-100 text-orange-800' },
+  threat: { label: 'Threat', cls: 'bg-red-100 text-red-800' },
+  spam: { label: 'Spam', cls: 'bg-amber-100 text-amber-800' },
+  scam_accusation: { label: 'Scam accusation', cls: 'bg-fuchsia-100 text-fuchsia-800' },
+  ai_accusation: { label: 'AI accusation', cls: 'bg-violet-100 text-violet-800' },
+  fake_accusation: { label: 'Fake accusation', cls: 'bg-purple-100 text-purple-800' },
+  negative_criticism: { label: 'Criticism', cls: 'bg-slate-200 text-slate-700' },
+  safe: { label: 'Safe', cls: 'bg-emerald-100 text-emerald-800' },
+};
 
-function dashboard() {
+const FILTERS = [
+  { key: 'flagged', label: 'Needs attention', hint: 'AI suggests delete or review, still visible' },
+  { key: 'unanswered', label: 'Unanswered', hint: 'Safe top-level comments without a Page reply' },
+  { key: 'all', label: 'All comments', hint: '' },
+  { key: 'hidden', label: 'Hidden', hint: '' },
+  { key: 'deleted', label: 'Deleted', hint: '' },
+  { key: 'unreviewed', label: 'Not reviewed yet', hint: 'Waiting for AI review' },
+];
+
+const AUTOMOD_STATUS = {
+  deleted: { label: 'Auto-deleted', cls: 'bg-red-50 text-red-700 ring-red-200' },
+  hidden: { label: 'Auto-hidden', cls: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  would_delete: { label: 'Would delete (dry run)', cls: 'bg-slate-50 text-slate-600 ring-slate-200' },
+  would_hide: { label: 'Would hide (dry run)', cls: 'bg-slate-50 text-slate-600 ring-slate-200' },
+  failed: { label: 'Auto-action failed', cls: 'bg-red-50 text-red-700 ring-red-200' },
+};
+
+function app() {
   return {
-    loading: false,
-    loadingScope: null,
-    autoRefreshOn: true,
-    _autoRefreshTimer: null,
-    meta: { version: 'v25.0', primaryAccountId: '', timezone: '' },
-    safety: { dailyCallsUsed: 0, dailyCallCap: 500, readonly: true, killSwitch: false, cooldowns: [], proxy: '' },
-    account: null,
+    tab: 'comments',
+    now: Date.now(),
+    state: null,
+    toasts: [],
 
-    level: 'campaign',
-    parentCampaignId: null,
-    parentAdsetId: null,
-    breadcrumb: null,
+    // comments
+    filters: FILTERS,
+    filter: 'flagged',
+    postFilter: '',
+    q: '',
     rows: [],
-    lastRun: null,
-    lastInsightsFetchedAt: null,
-    oldestInsightsFetchedAt: null,
-    rowsWithoutInsights: 0,
-    nowTick: Date.now(),
-    totals: {},
-    usageSamples: [],
-    rateLimitDetails: null,
-    datePreset: 'today',
-    sortField: 'spend',
-    sortDir: 'desc',
+    total: 0,
+    counts: {},
+    offset: 0,
+    limit: 50,
+    loadingComments: false,
+    selected: [],
+    busyIds: {},
+    replyOpen: null,
+    replyText: '',
+    replyBusy: false,
 
-    filterMode: 'active',
+    // posts
+    posts: [],
+    trackedDraft: {},
+    postView: 'all',
+    postQuery: '',
+    addInput: '',
+    addBusy: false,
+    discovering: false,
+    savingTracked: false,
 
-    columnsOpen: false,
-    presetsOpen: false,
-    rateLimitOpen: false,
-    visibleColumns: {},
-    columnGroups: COLUMN_GROUPS,
+    // activity
+    runs: [],
+    openRunId: null,
+    runActions: {},
+    recentActions: [],
 
-    builtInPresets: BUILT_IN_PRESETS,
-    customPresets: [],
-    activePresetId: 'default',
+    // settings
+    settingsDraft: null,
+    savingSettings: false,
+    blocked: [],
 
-    toast: { show: false, type: 'info', title: '', message: '' },
-
-    actionPending: {},
-    budgetEdit: { id: null, level: null, kind: 'daily', dollars: '' },
-    nameEdit: { id: null, value: '' },
-
-    tools: {
-      open: false,
-      row: null,
-      level: null,
-      tab: 'breakdowns',
-      breakdown: 'age_gender',
-      datePreset: 'last_7d',
-      breakdowns: { loading: false, rows: [], dims: [], error: '' },
-      activities: { loading: false, rows: [], error: '' },
-      preview: { loading: false, iframe: '', format: 'DESKTOP_FEED_STANDARD', error: '' },
-    },
-    breakdownOptions: [
-      { id: 'age_gender', label: 'Age & gender', tip: 'Performance split by age bracket and gender — find your best-converting demographics.' },
-      { id: 'country', label: 'Country', tip: 'Performance split by country.' },
-      { id: 'region', label: 'Region', tip: 'Performance split by region/state within countries.' },
-      { id: 'platform', label: 'Platform', tip: 'Facebook vs Instagram vs Audience Network vs Messenger.' },
-      { id: 'placement', label: 'Placement', tip: 'Platform + position (Feed, Stories, Reels, Marketplace, etc.).' },
-      { id: 'device', label: 'Device', tip: 'Impression device (mobile, desktop, tablet).' },
-      { id: 'hourly', label: 'Hour of day', tip: 'Performance by hour of day (advertiser time zone) — find peak hours.' },
-    ],
-    previewFormats: [
-      { id: 'DESKTOP_FEED_STANDARD', label: 'Desktop Feed' },
-      { id: 'MOBILE_FEED_STANDARD', label: 'Mobile Feed' },
-      { id: 'INSTAGRAM_STANDARD', label: 'Instagram Feed' },
-      { id: 'INSTAGRAM_STORY', label: 'Instagram Story' },
-      { id: 'FACEBOOK_STORY_MOBILE', label: 'Facebook Story' },
-      { id: 'INSTAGRAM_REELS', label: 'Instagram Reels' },
-      { id: 'RIGHT_COLUMN_STANDARD', label: 'Right Column' },
-    ],
-
-    strategy: {
-      open: false,
-      tab: 'briefing',
-      loading: false,
-      aiLoading: false,
-      briefingLoading: false,
-      window: 'last_30d',
-      data: null,
-      narrative: null,
-      briefing: null,
-      copied: false,
-      error: '',
-      chat: { messages: [], input: '', loading: false, error: '', sessionId: '' },
-      briefOpen: false,
-      briefSaving: false,
-      briefSaved: false,
-      profile: { riskTolerance: 'balanced', brandVoice: '', notes: '', campaigns: [] },
-      armed: false,
-      envForced: false,
-      armBusy: false,
-    },
-    strategyWindows: [
-      { id: 'last_7d', label: 'Last 7 days' },
-      { id: 'last_14d', label: 'Last 14 days' },
-      { id: 'last_28d', label: 'Last 28 days' },
-      { id: 'last_30d', label: 'Last 30 days' },
-      { id: 'last_90d', label: 'Last 90 days' },
-    ],
-    get advisorSuggestions() {
-      const fallback = [
-        'How did yesterday compare to our usual day?',
-        'Which campaign is safe to scale right now, and by how much?',
-        'What are people saying in the comments — any objections or spam?',
-        'Find my worst ad set and propose what to do about it',
-      ];
-      const d = this.strategy.data;
-      if (!d) return fallback;
-      const dg = d.decisions || {};
-      const out = [];
-      const decisions = Array.isArray(dg.decisions) ? dg.decisions : [];
-      const top = decisions.find((z) => z.entityName) || decisions[0];
-      if (top && (top.entityName || top.segment)) out.push(`What should I do about ${top.entityName || top.segment}, and why?`);
-      const ll = d.learning && d.learning.learningLimited;
-      if (ll > 0) out.push(`${ll} ad set${ll > 1 ? 's are' : ' is'} learning-limited — how do I fix that?`);
-      if (dg.trend7 && dg.trend7.earlySaturation) out.push('CPM is rising while CTR holds — is the creative fatiguing?');
-      const segs = dg.segments || {};
-      const worse = [...(segs.gender || []), ...(segs.age || []), ...(segs.platform || [])]
-        .find((s) => s.verdict === 'worse' && (s.confidence === 'high' || s.confidence === 'medium'));
-      if (worse) out.push(`Is ${worse.label} really underperforming, and should I act on it?`);
-      const lever = Array.isArray(dg.growth && dg.growth.levers)
-        ? dg.growth.levers.find((l) => l.applicability === 'foundational' || l.applicability === 'primary') : null;
-      if (lever) out.push(`How do I execute: ${lever.lever}?`);
-      out.push('How did yesterday compare to our usual day?');
-      out.push('Any objections or spam in the comments to handle?');
-      return [...new Set(out)].slice(0, 4);
-    },
-
-    get canManage() {
-      return !!this.safety.allowAdManagement && !this.safety.killSwitch;
-    },
-    get manageHint() {
-      if (this.safety.killSwitch) return 'Kill switch is engaged — all Meta writes are halted.';
-      if (!this.safety.allowAdManagement) return 'Ad management is read-only. Set FB_ALLOW_AD_MANAGEMENT=1 and restart to enable pause/resume and budget edits.';
-      return 'Ad management is enabled. Changes are sent to Meta and take effect immediately.';
-    },
-
-    get dailyPct() {
-      const cap = this.safety.dailyCallCap || 1;
-      return Math.round((this.safety.dailyCallsUsed / cap) * 100);
-    },
-    get activeCount() {
-      return this.rows.filter((c) => (c.effective_status || c.status) === 'ACTIVE').length;
-    },
-    get visibleColumnCount() {
-      return ORDERED_COLUMNS.filter((c) => this.visibleColumns[c.id] !== false).length;
-    },
-    get visibleOrderedColumns() {
-      return ORDERED_COLUMNS.filter((c) => this.visibleColumns[c.id] !== false);
-    },
-    get levelNoun() {
-      return this.level === 'campaign' ? 'Campaign' : this.level === 'adset' ? 'Ad Set' : 'Ad';
-    },
-    get levelNounPlural() {
-      return this.level === 'campaign' ? 'campaigns' : this.level === 'adset' ? 'ad sets' : 'ads';
-    },
-    get levelTitle() {
-      if (this.level === 'campaign') return 'Campaigns';
-      if (this.level === 'adset') return this.parentCampaignId ? `Ad Sets · ${this.breadcrumb?.campaignName || ''}` : 'All Ad Sets';
-      return this.parentAdsetId
-        ? `Ads · ${this.breadcrumb?.adsetName || ''}`
-        : this.parentCampaignId
-          ? `Ads · ${this.breadcrumb?.campaignName || ''}`
-          : 'All Ads';
-    },
-    get canDrillDown() {
-      return this.level === 'campaign' || this.level === 'adset';
-    },
-    get insightsAgeSec() {
-      if (!this.lastInsightsFetchedAt) return null;
-      const t = new Date(this.lastInsightsFetchedAt).getTime();
-      if (Number.isNaN(t)) return null;
-      return Math.max(0, Math.floor((this.nowTick - t) / 1000));
-    },
-    get stalenessLevel() {
-      const a = this.insightsAgeSec;
-      if (a == null) return this.rowsWithoutInsights > 0 ? 'none' : 'fresh';
-      if (a >= STALE_OLD_SEC) return 'old';
-      if (a >= STALE_WARN_SEC) return 'stale';
-      return 'fresh';
-    },
-    get stalenessClass() {
-      const s = this.stalenessLevel;
-      if (s === 'old') return 'text-red-700 font-medium';
-      if (s === 'stale') return 'text-yellow-700 font-medium';
-      return 'text-meta-gray-600';
-    },
-    rowStaleness(c) {
-      const ts = c.insights_fetched_at;
-      if (!ts) return 'missing';
-      const t = new Date(ts).getTime();
-      if (Number.isNaN(t)) return 'missing';
-      const age = Math.floor((this.nowTick - t) / 1000);
-      if (age >= STALE_OLD_SEC) return 'old';
-      if (age >= STALE_WARN_SEC) return 'stale';
-      return 'fresh';
-    },
-    get maxUsagePct() {
-      const a = this.safety || {};
-      return Math.max(a.appMaxPct || 0, a.bucMaxPct || 0, a.insightsAppPct || 0, a.insightsAccPct || 0);
-    },
-    get autoRefreshBlocked() {
-      if (!this.autoRefreshOn) return true;
-      if (this.safety.killSwitch) return true;
-      if (this.maxUsagePct >= SAFETY_USAGE_PCT_BLOCK) return true;
-      if (typeof document !== 'undefined' && document.hidden) return true;
-      const cap = this.safety.dailyCallCap || 1;
-      if ((this.safety.dailyCallsUsed || 0) / cap >= 0.8) return true;
-      return false;
-    },
-    get activePresetLabel() {
-      const all = [...BUILT_IN_PRESETS, ...this.customPresets];
-      const p = all.find((x) => x.id === this.activePresetId);
-      return p ? p.name : 'Custom';
-    },
-    get displayedRows() {
-      let arr = [...this.rows];
-      if (this.filterMode === 'active') {
-        arr = arr.filter((c) => (c.effective_status || c.status) === 'ACTIVE');
-      } else if (this.filterMode === 'delivered') {
-        arr = arr.filter((c) => (c.impressions || 0) > 0);
-      }
-      const f = this.sortField;
-      const dir = this.sortDir === 'desc' ? -1 : 1;
-      arr.sort((a, b) => {
-        let av = a[f];
-        let bv = b[f];
-        if (av == null && bv == null) return 0;
-        if (av == null) return 1;
-        if (bv == null) return -1;
-        if (typeof av === 'string') return av.localeCompare(bv) * dir;
-        return (av - bv) * dir;
-      });
-      return arr;
-    },
+    categories: CATEGORIES,
 
     async init() {
-      this.loadFilterMode();
-      this.loadCustomPresets();
-      this.loadActivePreset();
-      this.loadColumnPrefs();
-      const builtIn = BUILT_IN_PRESETS.find((p) => p.id === this.activePresetId);
-      if (builtIn) this.applyPreset(builtIn.id);
-      this.loadAutoRefresh();
-      await this.refreshDashboardData();
-      await this.refreshUsage();
-      await this.refreshRateLimitDetails();
-      setInterval(() => { this.refreshUsage(); }, 8000);
-      setInterval(() => { this.nowTick = Date.now(); }, 5000);
-      this.startAutoRefresh();
+      const t = new URLSearchParams(location.hash.slice(1)).get('tab');
+      if (['comments', 'posts', 'activity', 'settings'].includes(t)) this.tab = t;
+      await this.loadState();
+      await this.loadPosts();
+      this.go(this.tab);
+      setInterval(() => { this.now = Date.now(); }, 1000);
+      this.poll();
     },
 
-    loadAutoRefresh() {
-      try {
-        const v = localStorage.getItem(LS_AUTO_REFRESH);
-        if (v === 'on' || v === 'off') this.autoRefreshOn = v === 'on';
-      } catch {}
-    },
-    saveAutoRefresh() {
-      try { localStorage.setItem(LS_AUTO_REFRESH, this.autoRefreshOn ? 'on' : 'off'); } catch {}
-      if (this.autoRefreshOn) this.startAutoRefresh(); else this.stopAutoRefresh();
-    },
-    startAutoRefresh() {
-      this.stopAutoRefresh();
-      this._autoRefreshTimer = setInterval(() => {
-        if (this.autoRefreshBlocked) return;
-        if (this.loading) return;
-        const age = this.insightsAgeSec;
-        if (age == null || age >= STALE_WARN_SEC) {
-          this.refreshLevelNow({ silent: true });
-        }
-      }, AUTO_REFRESH_INTERVAL_MS);
-    },
-    stopAutoRefresh() {
-      if (this._autoRefreshTimer) { clearInterval(this._autoRefreshTimer); this._autoRefreshTimer = null; }
+    // Polls quickly while a run is in progress, slowly otherwise.
+    async poll() {
+      const wasRunning = this.state?.scheduler?.running;
+      await this.loadState();
+      const running = this.state?.scheduler?.running;
+      if (wasRunning && !running) {
+        this.toast(this.runSummary(this.state.lastRun), this.state.lastRun?.status === 'error' ? 'error' : 'ok');
+        this.loadComments();
+        if (this.tab === 'activity') this.loadActivity();
+      }
+      setTimeout(() => this.poll(), running ? 2500 : 30000);
     },
 
-    loadFilterMode() {
-      try {
-        const v = localStorage.getItem(LS_FILTER_MODE);
-        if (v === 'all' || v === 'active' || v === 'delivered') this.filterMode = v;
-      } catch {}
-    },
-    setFilterMode(mode) {
-      this.filterMode = mode;
-      try { localStorage.setItem(LS_FILTER_MODE, mode); } catch {}
+    go(tab) {
+      this.tab = tab;
+      history.replaceState(null, '', `#tab=${tab}`);
+      if (tab === 'activity') this.loadActivity();
+      if (tab === 'settings') { this.settingsDraft = JSON.parse(JSON.stringify(this.state.settings)); this.loadBlocked(); }
+      if (tab === 'posts') this.loadPosts();
+      if (tab === 'comments') this.loadComments();
     },
 
-    loadCustomPresets() {
+    async api(path, opts = {}) {
+      const init = { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } };
+      if (init.body && typeof init.body !== 'string') init.body = JSON.stringify(init.body);
       try {
-        const raw = localStorage.getItem(LS_PRESETS);
-        if (raw) this.customPresets = JSON.parse(raw) || [];
-      } catch {}
-    },
-    saveCustomPresets() {
-      try { localStorage.setItem(LS_PRESETS, JSON.stringify(this.customPresets)); } catch {}
-    },
-    loadActivePreset() {
-      try {
-        const v = localStorage.getItem(LS_ACTIVE_PRESET);
-        if (v) this.activePresetId = v;
-      } catch {}
-    },
-    saveActivePreset() {
-      try { localStorage.setItem(LS_ACTIVE_PRESET, this.activePresetId); } catch {}
-    },
-    applyPreset(id) {
-      const all = [...BUILT_IN_PRESETS, ...this.customPresets];
-      const p = all.find((x) => x.id === id);
-      if (!p) return;
-      const set = new Set(p.columns);
-      const next = {};
-      for (const col of ORDERED_COLUMNS) next[col.id] = set.has(col.id);
-      this.visibleColumns = next;
-      this.activePresetId = id;
-      this.saveColumnPrefs();
-      this.saveActivePreset();
-    },
-    saveCurrentAsPreset() {
-      const name = window.prompt('Save current visible columns as preset. Name:');
-      if (!name) return;
-      const trimmed = name.trim();
-      if (!trimmed) return;
-      const id = 'user_' + Date.now().toString(36);
-      const visible = ORDERED_COLUMNS.filter((c) => this.visibleColumns[c.id] !== false).map((c) => c.id);
-      this.customPresets = [...this.customPresets, { id, name: trimmed, columns: visible }];
-      this.saveCustomPresets();
-      this.activePresetId = id;
-      this.saveActivePreset();
-      this.toastInfo('Preset saved', `"${trimmed}" with ${visible.length} columns`);
-    },
-    deletePreset(id) {
-      if (!confirm('Delete this preset?')) return;
-      this.customPresets = this.customPresets.filter((p) => p.id !== id);
-      this.saveCustomPresets();
-      if (this.activePresetId === id) {
-        this.activePresetId = 'default';
-        this.saveActivePreset();
+        const res = await fetch(path, init);
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok && data.ok !== false, status: res.status, data };
+      } catch (err) {
+        return { ok: false, status: 0, data: { message: String(err) } };
       }
     },
 
-    loadColumnPrefs() {
-      let stored = null;
-      try {
-        const raw = localStorage.getItem(LS_COLS);
-        if (raw) stored = JSON.parse(raw);
-      } catch {}
-      const next = {};
-      for (const col of ORDERED_COLUMNS) {
-        if (stored && typeof stored[col.id] === 'boolean') {
-          next[col.id] = stored[col.id];
-        } else {
-          next[col.id] = DEFAULT_VISIBLE_COLUMN_IDS.has(col.id);
-        }
-      }
-      this.visibleColumns = next;
-      this.saveColumnPrefs();
-    },
-    saveColumnPrefs() {
-      try { localStorage.setItem(LS_COLS, JSON.stringify(this.visibleColumns)); } catch {}
-    },
-    resetColumnsToDefault() {
-      this.applyPreset('default');
-    },
-    toggleColumn(id) {
-      this.visibleColumns[id] = this.visibleColumns[id] === false ? true : !this.visibleColumns[id];
-      if (this.visibleColumns[id] === undefined) this.visibleColumns[id] = false;
-      this.markPresetCustom();
-      this.saveColumnPrefs();
-    },
-    toggleAllColumns(on) {
-      const next = {};
-      for (const col of ORDERED_COLUMNS) next[col.id] = on;
-      this.visibleColumns = next;
-      this.markPresetCustom();
-      this.saveColumnPrefs();
-    },
-    toggleGroup(groupId) {
-      const group = COLUMN_GROUPS.find((g) => g.id === groupId);
-      if (!group) return;
-      const allOn = this.isGroupAllOn(groupId);
-      const next = { ...this.visibleColumns };
-      for (const col of group.columns) next[col.id] = !allOn;
-      this.visibleColumns = next;
-      this.markPresetCustom();
-      this.saveColumnPrefs();
-    },
-    isGroupAllOn(groupId) {
-      const group = COLUMN_GROUPS.find((g) => g.id === groupId);
-      if (!group) return false;
-      return group.columns.every((c) => this.visibleColumns[c.id] !== false);
-    },
-    markPresetCustom() {
-      this.activePresetId = '__custom__';
-      this.saveActivePreset();
+    toast(message, kind = 'ok') {
+      const id = Math.random();
+      this.toasts.push({ id, message, kind });
+      setTimeout(() => { this.toasts = this.toasts.filter((t) => t.id !== id); }, kind === 'error' ? 8000 : 4500);
     },
 
-    qs() {
-      const p = new URLSearchParams();
-      p.set('date_preset', this.datePreset);
-      p.set('level', this.level);
-      if (this.parentCampaignId) p.set('campaign_id', this.parentCampaignId);
-      if (this.parentAdsetId) p.set('adset_id', this.parentAdsetId);
-      return p.toString();
+    // ---------- state ----------
+
+    async loadState() {
+      const { ok, data } = await this.api('/api/state');
+      if (ok) { this.state = data; this.counts = data.counts; }
     },
 
-    async refreshDashboardData() {
-      try {
-        const r = await fetch(`/api/dashboard?${this.qs()}`);
-        const data = await r.json();
-        if (!data.ok) {
-          this.toastError('Dashboard load failed', data.error || 'unknown');
-          return;
-        }
-        this.account = data.account;
-        this.rows = data.rows || data.campaigns || [];
-        this.lastRun = data.lastRun;
-        this.lastInsightsFetchedAt = data.lastInsightsFetchedAt || null;
-        this.oldestInsightsFetchedAt = data.oldestInsightsFetchedAt || null;
-        this.rowsWithoutInsights = data.rowsWithoutInsights || 0;
-        this.totals = data.totals || {};
-        this.breadcrumb = data.breadcrumb || null;
-        this.meta = { ...this.meta, ...data.meta };
-        this.safety = { ...this.safety, ...data.safety };
-      } catch (e) {
-        this.toastError('Dashboard load error', String(e));
-      }
-    },
-    async refreshUsage() {
-      try {
-        const r = await fetch('/api/usage?limit=100');
-        const data = await r.json();
-        if (data.ok) {
-          this.usageSamples = data.samples || [];
-          this.safety = { ...this.safety, ...data.safety };
-        }
-      } catch {}
-    },
-    async refreshRateLimitDetails() {
-      try {
-        const r = await fetch('/api/rate-limit-details');
-        const data = await r.json();
-        if (data.ok) {
-          this.rateLimitDetails = data;
-          this.safety = { ...this.safety, ...data.safety };
-        }
-      } catch {}
-    },
-    async refreshLevelNow({ silent = false } = {}) {
-      if (this.loading || this.safety.killSwitch) return;
-      this.loading = true;
-      this.loadingScope = 'level';
-      try {
-        const body = {
-          date_preset: this.datePreset,
-          level: this.level,
-          campaign_id: this.parentCampaignId,
-          adset_id: this.parentAdsetId,
-          only_had_delivery: this.filterMode === 'delivered',
-        };
-        const r = await fetch('/api/refresh', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await r.json();
-        if (!data.ok) {
-          this.toastError('Refresh failed', data.error || data.reason || 'unknown');
-        } else if (!silent) {
-          const n = data.refresh?.entitiesCount ?? data.refresh?.campaignsCount ?? (data.rows?.length || 0);
-          this.toastInfo(`Refreshed ${this.levelNounPlural}`, `${n} rows · ${data.refresh?.elapsedMs || 0}ms`);
-        }
-      } catch (e) {
-        if (!silent) this.toastError('Refresh error', String(e));
-      } finally {
-        this.loading = false;
-        this.loadingScope = null;
-        await this.refreshDashboardData();
-        await this.refreshUsage();
-        await this.refreshRateLimitDetails();
-      }
-    },
-    async refreshAllNow() {
-      if (this.loading || this.safety.killSwitch) return;
-      this.loading = true;
-      this.loadingScope = 'all';
-      try {
-        const r = await fetch('/api/refresh-all', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date_preset: this.datePreset, only_had_delivery: this.filterMode === 'delivered' }),
-        });
-        const data = await r.json();
-        if (!data.ok) {
-          this.toastError('Refresh all failed', data.error || 'unknown');
-        } else {
-          const ra = data.refreshAll || {};
-          const c = ra.results?.campaign?.campaignsCount || 0;
-          const a = ra.results?.adset?.entitiesCount || 0;
-          const d = ra.results?.ad?.entitiesCount || 0;
-          this.toastInfo('Refreshed all 3 levels', `${c} campaigns · ${a} ad sets · ${d} ads · ${ra.elapsedMs}ms · ${ra.httpCalls} HTTP`);
-        }
-      } catch (e) {
-        this.toastError('Refresh all error', String(e));
-      } finally {
-        this.loading = false;
-        this.loadingScope = null;
-        await this.refreshDashboardData();
-        await this.refreshUsage();
-        await this.refreshRateLimitDetails();
-      }
-    },
-    async onDatePresetChange() {
-      await this.refreshDashboardData();
+    get status() {
+      const s = this.state;
+      if (!s) return { label: 'Loading…', dot: 'bg-slate-300', tone: 'text-slate-500' };
+      if (s.safety.killSwitch) return { label: 'Kill switch on', dot: 'bg-red-500', tone: 'text-red-700' };
+      if (s.scheduler.running) return { label: 'Running now…', dot: 'bg-blue-500 animate-pulse', tone: 'text-blue-700' };
+      if (!s.settings.enabled) return { label: 'Automation off', dot: 'bg-slate-400', tone: 'text-slate-600' };
+      if (s.settings.dryRun) return { label: 'Dry run', dot: 'bg-amber-500', tone: 'text-amber-700' };
+      return { label: 'Active', dot: 'bg-emerald-500', tone: 'text-emerald-700' };
     },
 
-    setLevel(level, campaignId, adsetId) {
-      if (level === 'campaign') { campaignId = null; adsetId = null; }
-      if (level === 'adset') { adsetId = null; }
-      this.level = level;
-      this.parentCampaignId = campaignId || null;
-      this.parentAdsetId = adsetId || null;
-      this.refreshDashboardData();
+    get warnings() {
+      const s = this.state;
+      if (!s) return [];
+      const w = [];
+      if (!s.safety.moderationAllowed) w.push('FB_ALLOW_COMMENT_MODERATION is off — comments are reviewed but nothing is hidden or deleted.');
+      if (!s.analyzerEnabled) w.push('OPENROUTER_API_KEY is missing — comments cannot be reviewed, so the automation takes no action.');
+      if (!s.trackedPosts) w.push('No posts are tracked yet. Choose posts in the Posts tab.');
+      return w;
     },
-    drillInto(row) {
-      if (this.level === 'campaign') {
-        this.setLevel('adset', row.id, null);
-      } else if (this.level === 'adset') {
-        this.setLevel('ad', row.campaign_id || this.parentCampaignId, row.id);
+
+    get nextRunLabel() {
+      const at = this.state?.scheduler?.nextRunAt;
+      if (!at) return null;
+      const s = Math.max(0, Math.round((Date.parse(at) - this.now) / 1000));
+      const m = Math.floor(s / 60);
+      return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+    },
+
+    async runNow() {
+      const { ok, data } = await this.api('/api/run', { method: 'POST' });
+      if (!ok) return this.toast(data.message || 'Could not start a run.', 'error');
+      this.toast('Run started — fetching new comments…');
+      await this.loadState();
+      setTimeout(() => this.poll(), 1500);
+    },
+
+    runSummary(r) {
+      if (!r) return 'Run finished.';
+      if (r.status === 'error') return `Run failed: ${r.error || 'unknown error'}`;
+      const parts = [`${r.new_comments} new comment${r.new_comments === 1 ? '' : 's'}`, `${r.analyzed} reviewed`];
+      if (r.deleted) parts.push(`${r.deleted} deleted`);
+      if (r.hidden) parts.push(`${r.hidden} hidden`);
+      if (r.dry_run) parts.push('dry run');
+      return `Run finished: ${parts.join(' · ')}`;
+    },
+
+    // ---------- comments ----------
+
+    async loadComments(reset = true) {
+      if (reset) { this.offset = 0; this.selected = []; }
+      this.loadingComments = true;
+      const p = new URLSearchParams({ filter: this.filter, limit: this.limit, offset: this.offset });
+      if (this.postFilter) p.set('post_id', this.postFilter);
+      if (this.q) p.set('q', this.q);
+      const { ok, data } = await this.api(`/api/comments?${p}`);
+      this.loadingComments = false;
+      if (!ok) return this.toast(data.message || 'Could not load comments.', 'error');
+      this.rows = data.rows;
+      this.total = data.total;
+      this.counts = data.counts;
+    },
+
+    setFilter(key) { this.filter = key; this.loadComments(); },
+    page(dir) { this.offset = Math.max(0, this.offset + dir * this.limit); this.loadComments(false); },
+
+    get trackedPosts() { return this.posts.filter((p) => p.tracked); },
+
+    patchRow(c) {
+      const i = this.rows.findIndex((r) => r.id === c.id);
+      if (i !== -1) this.rows[i] = { ...this.rows[i], ...c };
+    },
+
+    // Fades the card out, then drops it from the list.
+    removeRow(id) {
+      const row = this.rows.find((r) => r.id === id);
+      if (row) row._leaving = true;
+      this.selected = this.selected.filter((x) => x !== id);
+      setTimeout(() => {
+        const before = this.rows.length;
+        this.rows = this.rows.filter((r) => r.id !== id);
+        this.total = Math.max(0, this.total - (before - this.rows.length));
+      }, 280);
+    },
+
+    // After a successful action, drop the card if it no longer belongs in the current filter.
+    leavesFilter(action) {
+      if (action === 'delete') return true;
+      if (action === 'hide') return ['flagged', 'unanswered'].includes(this.filter);
+      if (action === 'unhide') return this.filter === 'hidden';
+      if (action === 'block') return false;
+      return false;
+    },
+
+    async applyAction(id, action) {
+      this.busyIds[id] = action;
+      const res = await this.api(`/api/comments/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+      delete this.busyIds[id];
+      if (res.ok) {
+        if (this.leavesFilter(action)) this.removeRow(id);
+        else if (res.data.comment) this.patchRow(res.data.comment);
+      }
+      return res;
+    },
+
+    async act(row, action) {
+      const labels = { delete: 'Delete this comment permanently?', block: `Block ${row.from_name || 'this person'} from the Page?` };
+      if (labels[action] && !confirm(labels[action])) return;
+      const { ok, data } = await this.applyAction(row.id, action);
+      if (!ok) return this.toast(data.message || `${action} failed.`, 'error');
+      this.toast({ hide: 'Hidden', unhide: 'Visible again', delete: 'Deleted', like: 'Liked', unlike: 'Like removed', block: 'Blocked' }[action] || 'Done');
+      this.loadState();
+    },
+
+    toggleSelect(id) {
+      this.selected = this.selected.includes(id) ? this.selected.filter((x) => x !== id) : [...this.selected, id];
+    },
+    selectAll() { this.selected = this.selected.length === this.rows.length ? [] : this.rows.map((r) => r.id); },
+
+    bulkProgress: null,
+
+    // One request per comment, in order, so each card updates the moment Facebook confirms it.
+    // The server still spaces writes by the global throttle; a safety block (kill switch, cap,
+    // cooldown) stops the rest.
+    async bulk(action) {
+      const ids = [...this.selected];
+      const n = ids.length;
+      if (!n || this.bulkProgress) return;
+      if (action === 'delete' && !confirm(`Delete ${n} comment${n === 1 ? '' : 's'} permanently?`)) return;
+      const verb = { delete: 'Deleting', hide: 'Hiding', unhide: 'Unhiding' }[action] || 'Working';
+      this.bulkProgress = { verb, done: 0, total: n };
+      let done = 0;
+      const failures = [];
+      for (const id of ids) {
+        const { ok, status, data } = await this.applyAction(id, action);
+        if (ok) done += 1; else failures.push(data.message || `${action} failed`);
+        this.bulkProgress = { verb, done: done + failures.length, total: n };
+        if (status === 423) break;
+      }
+      this.bulkProgress = null;
+      this.selected = [];
+      const stopped = done + failures.length < n;
+      this.toast(`${done} of ${n} ${action === 'delete' ? 'deleted' : 'done'}${failures.length ? ` — ${failures.length} failed: ${failures[0]}` : ''}${stopped ? ' (stopped)' : ''}`, failures.length ? 'error' : 'ok');
+      this.loadState();
+      this.counts = (await this.api(`/api/comments?filter=${this.filter}&limit=1`)).data.counts || this.counts;
+    },
+
+    openReply(row) {
+      this.replyOpen = this.replyOpen === row.id ? null : row.id;
+      this.replyText = '';
+    },
+
+    async draftReply(row) {
+      this.replyBusy = true;
+      const { ok, data } = await this.api(`/api/comments/${encodeURIComponent(row.id)}/suggest-reply`, { method: 'POST' });
+      this.replyBusy = false;
+      if (!ok) return this.toast(data.message || 'Could not draft a reply.', 'error');
+      this.replyText = data.suggestion.reply;
+    },
+
+    async sendReply(row) {
+      if (!this.replyText.trim()) return;
+      this.replyBusy = true;
+      const { ok, data } = await this.api(`/api/comments/${encodeURIComponent(row.id)}/reply`, { method: 'POST', body: { message: this.replyText } });
+      this.replyBusy = false;
+      if (!ok) return this.toast(data.message || 'Reply failed.', 'error');
+      this.patchRow(data.comment);
+      this.replyOpen = null;
+      this.toast('Reply posted');
+    },
+
+    cat(c) { return CATEGORIES[c] || { label: c || 'Not reviewed', cls: 'bg-slate-100 text-slate-500' }; },
+    autoStatus(s) { return AUTOMOD_STATUS[s] || null; },
+    sevClass(s) {
+      if (s == null) return 'text-slate-400';
+      if (s >= 7) return 'text-red-600';
+      if (s >= 4) return 'text-amber-600';
+      return 'text-slate-500';
+    },
+    showTranslation(r) {
+      return r.english_translation && r.english_translation.trim().toLowerCase() !== (r.message || '').trim().toLowerCase();
+    },
+
+    // ---------- posts ----------
+
+    async loadPosts() {
+      const { ok, data } = await this.api('/api/posts');
+      if (!ok) return;
+      this.posts = data.posts;
+      this.trackedDraft = Object.fromEntries(data.posts.map((p) => [p.id, !!p.tracked]));
+    },
+
+    get dirtyCount() {
+      return this.posts.filter((p) => !!p.tracked !== !!this.trackedDraft[p.id]).length;
+    },
+
+    get visiblePosts() {
+      const q = this.postQuery.trim().toLowerCase();
+      return this.posts.filter((p) => {
+        if (this.postView === 'tracked' && !this.trackedDraft[p.id]) return false;
+        if (this.postView === 'ad' && p.source !== 'ad') return false;
+        if (this.postView === 'page' && p.source === 'ad') return false;
+        if (!q) return true;
+        return [p.message, p.campaign_names, p.ad_names, p.id].some((v) => (v || '').toLowerCase().includes(q));
+      });
+    },
+
+    toggleDraft(id) { this.trackedDraft[id] = !this.trackedDraft[id]; },
+    discardDraft() { this.trackedDraft = Object.fromEntries(this.posts.map((p) => [p.id, !!p.tracked])); },
+
+    async saveTracked() {
+      this.savingTracked = true;
+      const ids = Object.entries(this.trackedDraft).filter(([, v]) => v).map(([k]) => k);
+      const { ok, data } = await this.api('/api/posts/track', { method: 'POST', body: { ids } });
+      this.savingTracked = false;
+      if (!ok) return this.toast(data.message || 'Could not save.', 'error');
+      this.posts = data.posts;
+      this.discardDraft();
+      this.toast(`Saved — ${ids.length} post${ids.length === 1 ? '' : 's'} tracked${data.added ? `, ${data.added} added` : ''}${data.removed ? `, ${data.removed} removed` : ''}`);
+      this.loadState();
+    },
+
+    async discover() {
+      this.discovering = true;
+      const { ok, data } = await this.api('/api/posts/refresh', { method: 'POST' });
+      this.discovering = false;
+      if (data.posts) { this.posts = data.posts; this.trackedDraft = { ...Object.fromEntries(data.posts.map((p) => [p.id, !!p.tracked])), ...this.trackedDraft }; }
+      if (!ok) return this.toast(data.ads?.message || data.page?.message || data.message || 'Refresh failed.', 'error');
+      this.toast(`Found ${data.ads?.count ?? 0} ad posts and ${data.page?.count ?? 0} Page posts`);
+    },
+
+    async addPost() {
+      if (!this.addInput.trim()) return;
+      this.addBusy = true;
+      const { ok, data } = await this.api('/api/posts/add', { method: 'POST', body: { input: this.addInput } });
+      this.addBusy = false;
+      if (!ok) return this.toast(data.message || 'Could not add that post.', 'error');
+      this.addInput = '';
+      const dirty = { ...this.trackedDraft };
+      this.posts = data.posts;
+      this.trackedDraft = { ...Object.fromEntries(data.posts.map((p) => [p.id, !!p.tracked])), ...dirty, [data.post.id]: true };
+      this.toast('Post added and tracked');
+      this.loadState();
+    },
+
+    async reviewBacklog(p) {
+      if (!confirm('Apply your policy to the comments this post had BEFORE you started tracking it?\n\nWith the current settings, matching comments will be ' + (this.state.settings.dryRun ? 'logged only (dry run).' : 'hidden/deleted for real.'))) return;
+      this.toast('Reviewing older comments…');
+      const { ok, data } = await this.api(`/api/posts/${encodeURIComponent(p.id)}/review-backlog`, { method: 'POST' });
+      if (!ok) return this.toast(data.message || 'Could not run.', 'error');
+      this.toast(this.runSummary(data.run), data.run?.status === 'error' ? 'error' : 'ok');
+      this.loadPosts();
+      this.loadComments();
+    },
+
+    viewComments(p) {
+      this.postFilter = p.id;
+      this.filter = 'all';
+      this.go('comments');
+    },
+
+    // ---------- activity ----------
+
+    async loadActivity() {
+      const [r, a] = await Promise.all([this.api('/api/runs?limit=40'), this.api('/api/actions?limit=60')]);
+      if (r.ok) this.runs = r.data.runs;
+      if (a.ok) this.recentActions = a.data.actions;
+    },
+
+    async toggleRun(run) {
+      if (this.openRunId === run.id) { this.openRunId = null; return; }
+      this.openRunId = run.id;
+      if (!this.runActions[run.id]) {
+        const { ok, data } = await this.api(`/api/runs/${run.id}`);
+        if (ok) this.runActions[run.id] = data.actions;
       }
     },
 
-    sortBy(field) {
-      if (this.sortField === field) {
-        this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
-      } else {
-        this.sortField = field;
-        this.sortDir = 'desc';
-      }
-    },
-    sortIcon(field) {
-      if (this.sortField !== field) return '';
-      return this.sortDir === 'desc' ? '↓' : '↑';
+    runTone(r) {
+      if (r.status === 'error') return 'bg-red-500';
+      if (r.status === 'partial') return 'bg-amber-500';
+      if (r.status === 'running') return 'bg-blue-500 animate-pulse';
+      return 'bg-emerald-500';
     },
 
-    formatMoney(v) {
-      if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
-      const n = Number(v);
-      const cur = this.account?.currency || 'USD';
-      const sym = cur === 'EUR' ? '€' : cur === 'USD' ? '$' : cur === 'GBP' ? '£' : cur + ' ';
-      const fmt = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      return `${sym}${fmt.format(n)}`;
+    actionLabel(a) {
+      if (a.dry_run) return `Would ${a.action}`;
+      if (!a.success) return `${a.action[0].toUpperCase()}${a.action.slice(1)} failed`;
+      return { delete: 'Deleted', hide: 'Hid', unhide: 'Unhid', reply: 'Replied to', like: 'Liked', unlike: 'Unliked', block: 'Blocked', unblock: 'Unblocked' }[a.action] || a.action;
     },
-    formatInt(v) {
-      if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
-      return new Intl.NumberFormat('en-US').format(Math.round(Number(v)));
+
+    // ---------- settings ----------
+
+    get settingsDirty() {
+      return this.settingsDraft && JSON.stringify(this.settingsDraft) !== JSON.stringify(this.state?.settings);
     },
-    formatPct(v) {
-      if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
-      const n = Number(v);
-      return n.toFixed(2) + '%';
-    },
-    formatFloat2(v) {
-      if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
-      return Number(v).toFixed(2);
-    },
-    formatRoas(v) {
-      if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
-      return Number(v).toFixed(2) + 'x';
-    },
-    _hasValue(v) {
-      return v != null && v !== '' && !Number.isNaN(Number(v));
-    },
-    _renderValue(v, kind) {
-      if (!this._hasValue(v) && kind !== 'badge') return '<span class="text-meta-gray-600">—</span>';
-      switch (kind) {
-        case 'money': return this.formatMoney(v);
-        case 'int': return this.formatInt(v);
-        case 'pct': return this.formatPct(v);
-        case 'float2': return this.formatFloat2(v);
-        case 'roas': return this.formatRoas(v);
-        default: return v == null ? '<span class="text-meta-gray-600">—</span>' : String(v);
+
+    async saveSettings() {
+      const d = this.settingsDraft;
+      if (d.enabled && !d.dryRun && !this.state.settings.enabled) {
+        const deleting = Object.entries(d.policy).filter(([, p]) => p.action === 'delete').length;
+        if (deleting && !confirm(`Turn on live automation? Every ${d.intervalMinutes} minutes, new comments matching ${deleting} categor${deleting === 1 ? 'y' : 'ies'} will be deleted permanently.`)) return;
       }
+      this.savingSettings = true;
+      const { ok, data } = await this.api('/api/settings', { method: 'POST', body: d });
+      this.savingSettings = false;
+      if (!ok) return this.toast(data.message || 'Could not save settings.', 'error');
+      this.state.settings = data.settings;
+      this.state.scheduler = data.scheduler;
+      this.settingsDraft = JSON.parse(JSON.stringify(data.settings));
+      this.toast('Settings saved');
     },
-    renderCell(c, col) {
-      if (col.kind === 'badge') return this.deliveryBadge(c);
-      const v = c[col.field];
-      return this._renderValue(v, col.kind);
+
+    async setKillSwitch(on) {
+      if (on && !confirm('Stop ALL Meta calls (fetching and moderation) until you turn this off?')) return;
+      const { ok, data } = await this.api('/api/kill-switch', { method: 'POST', body: { on } });
+      if (!ok) return this.toast('Could not change the kill switch.', 'error');
+      this.state.safety = data.safety;
+      this.toast(on ? 'Kill switch on — nothing will be sent to Meta' : 'Kill switch off');
+      this.loadState();
     },
-    renderTotalCell(col) {
-      if (col.kind === 'badge') return '';
-      const map = {
-        spend: 'spend', reach: 'reach', impressions: 'impressions', cpm: 'cpm',
-        frequency: 'frequency',
-        unique_inline_link_click_ctr: 'uniqueLinkClickCtr',
-        unique_inline_link_clicks: 'uniqueInlineLinkClicks',
-        cost_per_inline_link_click: 'costPerInlineLinkClick',
-        post_comments: 'postComments',
-        post_engagements: 'postEngagements',
-        link_clicks: 'linkClicks',
-        landing_page_views_total: 'landingPageViewsTotal',
-        landing_page_views_app: 'landingPageViewsApp',
-        landing_page_views_website: 'landingPageViewsWebsite',
-        cost_per_landing_page_view: 'costPerLandingPageView',
-        atc_total: 'atcTotal', atc_app: 'atcApp', atc_website: 'atcWebsite',
-        atc_offline: 'atcOffline', atc_meta: 'atcMeta',
-        cost_per_add_to_cart: 'costPerAddToCart',
-        ic_total: 'icTotal', ic_app: 'icApp', ic_website: 'icWebsite',
-        ic_offline: 'icOffline', ic_meta: 'icMeta',
-        cost_per_initiate_checkout: 'costPerInitiateCheckout',
-        purchases_total: 'purchasesTotal', purchases_app: 'purchasesApp',
-        purchases_website: 'purchasesWebsite', purchases_offline: 'purchasesOffline',
-        purchases_meta: 'purchasesMeta',
-        cost_per_purchase: 'costPerPurchase',
-        purchase_value_total: 'purchaseValueTotal', purchase_value_app: 'purchaseValueApp',
-        purchase_value_website: 'purchaseValueWebsite', purchase_value_offline: 'purchaseValueOffline',
-        purchase_value_meta: 'purchaseValueMeta',
-        purchase_roas_total: 'purchaseRoasTotal',
-        purchase_roas_website: 'purchaseRoasWebsite',
-        purchase_roas_app: 'purchaseRoasApp',
-      };
-      const key = map[col.field];
-      const v = key ? this.totals[key] : null;
-      return this._renderValue(v, col.kind);
+
+    async loadBlocked() {
+      const { ok, data } = await this.api('/api/blocked');
+      if (ok) this.blocked = data.blocked;
     },
-    deliveryBadge(c) {
-      const s = c.effective_status || c.status;
-      const isLive = s === 'ACTIVE';
-      const isPaused = s === 'PAUSED' || s === 'CAMPAIGN_PAUSED' || s === 'ADSET_PAUSED';
-      const color = isLive
-        ? 'bg-green-50 text-green-700 border-green-200'
-        : isPaused
-        ? 'bg-gray-50 text-meta-gray-600 border-gray-200'
-        : 'bg-yellow-50 text-yellow-700 border-yellow-200';
-      const label = isLive ? 'Active' : isPaused ? 'Off' : (s || '').replace(/_/g, ' ').toLowerCase();
-      const dot = isLive ? 'bg-green-500' : isPaused ? 'bg-gray-400' : 'bg-yellow-500';
-      return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-xs font-medium ${color}"><span class="w-1.5 h-1.5 rounded-full ${dot}"></span>${label}</span>`;
+
+    async unblock(b) {
+      if (!confirm(`Unblock ${b.name || b.psid}?`)) return;
+      const { ok, data } = await this.api(`/api/blocked/${encodeURIComponent(b.psid)}/unblock`, { method: 'POST' });
+      if (!ok) return this.toast(data.message || 'Unblock failed.', 'error');
+      this.blocked = data.blocked;
+      this.toast('Unblocked');
     },
-    timeAgo(iso) {
+
+    // ---------- formatting ----------
+
+    ago(iso) {
       if (!iso) return '—';
-      const t = new Date(iso).getTime();
-      if (Number.isNaN(t)) return '—';
-      const delta = Math.max(0, Math.floor((Date.now() - t) / 1000));
-      if (delta < 5) return 'just now';
-      if (delta < 60) return delta + 's ago';
-      if (delta < 3600) return Math.floor(delta / 60) + 'm ago';
-      if (delta < 86400) return Math.floor(delta / 3600) + 'h ago';
-      return Math.floor(delta / 86400) + 'd ago';
-    },
-    timeShort(iso) {
-      if (!iso) return '—';
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return '—';
-      return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    },
-
-    // ---------- Ad management (status / budget) ----------
-    isPending(id, action) {
-      return !!this.actionPending[`${id}:${action}`];
-    },
-    _setPending(id, action, on) {
-      const key = `${id}:${action}`;
-      if (on) this.actionPending = { ...this.actionPending, [key]: true };
-      else { const next = { ...this.actionPending }; delete next[key]; this.actionPending = next; }
-    },
-    rowBudgetKind(row) {
-      if (row.daily_budget != null && Number(row.daily_budget) > 0) return 'daily';
-      if (row.lifetime_budget != null && Number(row.lifetime_budget) > 0) return 'lifetime';
-      return null;
-    },
-    rowBudgetCents(row) {
-      const kind = this.rowBudgetKind(row);
-      if (kind === 'daily') return Number(row.daily_budget);
-      if (kind === 'lifetime') return Number(row.lifetime_budget);
-      return null;
-    },
-    formatBudget(row) {
-      const cents = this.rowBudgetCents(row);
-      if (cents == null) return null;
-      const kind = this.rowBudgetKind(row);
-      return `${this.formatMoney(cents / 100)}${kind === 'daily' ? '/day' : ' total'}`;
-    },
-    async toggleStatus(row) {
-      if (!this.canManage) { this.toastError('Ad management is off', this.manageHint); return; }
-      const current = row.status || row.effective_status;
-      const next = current === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
-      const verb = next === 'ACTIVE' ? 'resume (turn ON)' : 'pause (turn OFF)';
-      if (!confirm(`${next === 'ACTIVE' ? 'Resume' : 'Pause'} this ${this.levelNoun.toLowerCase()}?\n\n"${row.name}"\n\nThis will ${verb} delivery on Meta immediately.`)) return;
-      this._setPending(row.id, 'status', true);
-      try {
-        const r = await fetch(`/api/ads/${this.level}/${row.id}/status`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: next }),
-        });
-        const data = await r.json();
-        if (!data.ok) { this.toastError('Status change failed', data.message || data.error || 'unknown'); return; }
-        row.status = next;
-        row.effective_status = next;
-        this.toastInfo(`${next === 'ACTIVE' ? 'Resumed' : 'Paused'} ${this.levelNoun.toLowerCase()}`, row.name);
-        this.refreshUsage();
-      } catch (e) {
-        this.toastError('Status change error', String(e));
-      } finally {
-        this._setPending(row.id, 'status', false);
-      }
-    },
-    openBudgetEdit(row) {
-      if (!this.canManage) { this.toastError('Ad management is off', this.manageHint); return; }
-      const kind = this.rowBudgetKind(row) || 'daily';
-      const cents = this.rowBudgetCents(row);
-      this.budgetEdit = { id: row.id, level: this.level, kind, dollars: cents != null ? (cents / 100).toFixed(2) : '' };
-    },
-    cancelBudgetEdit() {
-      this.budgetEdit = { id: null, level: null, kind: 'daily', dollars: '' };
-    },
-    async saveBudget(row) {
-      const dollars = parseFloat(this.budgetEdit.dollars);
-      if (!Number.isFinite(dollars) || dollars <= 0) { this.toastError('Invalid budget', 'Enter a positive amount.'); return; }
-      const cents = Math.round(dollars * 100);
-      const kind = this.budgetEdit.kind;
-      const body = kind === 'daily' ? { daily_budget: cents } : { lifetime_budget: cents };
-      if (!confirm(`Set ${kind === 'daily' ? 'daily' : 'lifetime'} budget for "${row.name}" to ${this.formatMoney(dollars)}?\n\nThis changes spend on Meta immediately.`)) return;
-      this._setPending(row.id, 'budget', true);
-      try {
-        const r = await fetch(`/api/ads/${this.level}/${row.id}/budget`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await r.json();
-        if (!data.ok) { this.toastError('Budget change failed', data.message || data.error || 'unknown'); return; }
-        if (kind === 'daily') row.daily_budget = cents; else row.lifetime_budget = cents;
-        this.toastInfo('Budget updated', `${row.name} → ${this.formatMoney(dollars)}${kind === 'daily' ? '/day' : ' total'}`);
-        this.cancelBudgetEdit();
-        this.refreshUsage();
-      } catch (e) {
-        this.toastError('Budget change error', String(e));
-      } finally {
-        this._setPending(row.id, 'budget', false);
-      }
-    },
-    openRename(row) {
-      if (!this.canManage) { this.toastError('Ad management is off', this.manageHint); return; }
-      this.nameEdit = { id: row.id, value: row.name || '' };
-    },
-    cancelRename() {
-      this.nameEdit = { id: null, value: '' };
-    },
-    async saveRename(row) {
-      const name = (this.nameEdit.value || '').trim();
-      if (!name) { this.toastError('Invalid name', 'Name cannot be empty.'); return; }
-      if (name === row.name) { this.cancelRename(); return; }
-      this._setPending(row.id, 'rename', true);
-      try {
-        const r = await fetch(`/api/ads/${this.level}/${row.id}/rename`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        });
-        const data = await r.json();
-        if (!data.ok) { this.toastError('Rename failed', data.message || data.error || 'unknown'); return; }
-        row.name = name;
-        this.toastInfo('Renamed', `→ ${name}`);
-        this.cancelRename();
-        this.refreshUsage();
-      } catch (e) {
-        this.toastError('Rename error', String(e));
-      } finally {
-        this._setPending(row.id, 'rename', false);
-      }
-    },
-    openComments(row) {
-      const detail = this.level === 'ad'
-        ? { adId: row.id, postId: row.creative_object_story_id || row.post_id || null }
-        : { campaignId: this.level === 'campaign' ? row.id : (row.campaign_id || this.parentCampaignId), name: row.name };
-      window.dispatchEvent(new CustomEvent('open-comments-manager', { detail }));
-    },
-
-    openTools(row) {
-      this.tools.open = true;
-      this.tools.row = row;
-      this.tools.level = this.level;
-      this.tools.tab = 'breakdowns';
-      this.tools.datePreset = this.datePreset && this.datePreset !== 'today' ? this.datePreset : 'last_7d';
-      this.tools.breakdowns = { loading: false, rows: [], dims: [], error: '' };
-      this.tools.activities = { loading: false, rows: [], error: '' };
-      this.tools.preview = { loading: false, iframe: '', format: 'DESKTOP_FEED_STANDARD', error: '' };
-      this.loadBreakdowns();
-    },
-    closeTools() {
-      this.tools.open = false;
-      this.tools.row = null;
-    },
-    setToolsTab(tab) {
-      this.tools.tab = tab;
-      if (tab === 'breakdowns' && !this.tools.breakdowns.rows.length) this.loadBreakdowns();
-      if (tab === 'history' && !this.tools.activities.rows.length) this.loadActivities();
-      if (tab === 'preview' && !this.tools.preview.iframe) this.loadPreview();
-    },
-    breakdownTotals() {
-      const t = { spend: 0, impressions: 0, reach: 0, clicks: 0, purchases: 0, purchase_value: 0 };
-      for (const r of this.tools.breakdowns.rows) {
-        t.spend += r.spend; t.impressions += r.impressions; t.reach += r.reach;
-        t.clicks += r.clicks; t.purchases += r.purchases; t.purchase_value += r.purchase_value;
-      }
-      t.roas = t.spend ? t.purchase_value / t.spend : null;
-      return t;
-    },
-    async loadBreakdowns() {
-      const { row, level } = this.tools;
-      if (!row) return;
-      this.tools.breakdowns.loading = true;
-      this.tools.breakdowns.error = '';
-      try {
-        const url = `/api/ads/${level}/${row.id}/breakdowns?breakdown=${encodeURIComponent(this.tools.breakdown)}&date_preset=${encodeURIComponent(this.tools.datePreset)}`;
-        const r = await fetch(url);
-        const data = await r.json();
-        if (!data.ok) { this.tools.breakdowns.error = data.message || data.error || 'Failed to load'; this.tools.breakdowns.rows = []; return; }
-        this.tools.breakdowns.rows = data.rows || [];
-        this.tools.breakdowns.dims = data.dims || [];
-      } catch (e) {
-        this.tools.breakdowns.error = String(e);
-      } finally {
-        this.tools.breakdowns.loading = false;
-        this.refreshUsage();
-      }
-    },
-    async loadActivities() {
-      const { row } = this.tools;
-      if (!row) return;
-      this.tools.activities.loading = true;
-      this.tools.activities.error = '';
-      try {
-        const r = await fetch(`/api/ads/activities?entity_id=${encodeURIComponent(row.id)}&limit=200`);
-        const data = await r.json();
-        if (!data.ok) { this.tools.activities.error = data.message || data.error || 'Failed to load'; this.tools.activities.rows = []; return; }
-        this.tools.activities.rows = data.rows || [];
-      } catch (e) {
-        this.tools.activities.error = String(e);
-      } finally {
-        this.tools.activities.loading = false;
-        this.refreshUsage();
-      }
-    },
-    async loadPreview() {
-      const { row, level } = this.tools;
-      if (!row || level !== 'ad') return;
-      this.tools.preview.loading = true;
-      this.tools.preview.error = '';
-      try {
-        const r = await fetch(`/api/ads/ad/${row.id}/preview?ad_format=${encodeURIComponent(this.tools.preview.format)}`);
-        const data = await r.json();
-        if (!data.ok) { this.tools.preview.error = data.message || data.error || 'No preview'; this.tools.preview.iframe = ''; return; }
-        this.tools.preview.iframe = data.iframe || '';
-        this.$nextTick(() => {
-          const host = document.getElementById('tools-preview-host');
-          if (host) host.innerHTML = data.iframe || '';
-        });
-      } catch (e) {
-        this.tools.preview.error = String(e);
-      } finally {
-        this.tools.preview.loading = false;
-        this.refreshUsage();
-      }
-    },
-    activityValue(extra) {
-      if (!extra || typeof extra !== 'object') return '';
-      const parts = [];
-      if (extra.old_value != null || extra.new_value != null) {
-        parts.push(`${extra.old_value ?? '—'} → ${extra.new_value ?? '—'}`);
-      }
-      return parts.join(' ');
-    },
-    async duplicateRow(row) {
-      if (!this.canManage) { this.toastError('Ad management is off', this.manageHint); return; }
-      if (this.level !== 'campaign' && this.level !== 'adset') { this.toastError('Cannot duplicate', 'Only campaigns and ad sets can be duplicated.'); return; }
-      const noun = this.levelNoun.toLowerCase();
-      if (!confirm(`Duplicate this ${noun}?\n\n"${row.name}"\n\nA full PAUSED copy (including its ${this.level === 'campaign' ? 'ad sets & ads' : 'ads'}) will be created. The original is NOT touched and the copy stays OFF until you turn it on.`)) return;
-      this._setPending(row.id, 'duplicate', true);
-      try {
-        const r = await fetch(`/api/ads/${this.level}/${row.id}/duplicate`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deep_copy: true }),
-        });
-        const data = await r.json();
-        if (!data.ok) { this.toastError('Duplicate failed', data.message || data.error || 'unknown'); return; }
-        this.toastInfo('Duplicated (paused)', `New ${noun} created OFF. Refresh to see it.`);
-        this.refreshUsage();
-      } catch (e) {
-        this.toastError('Duplicate error', String(e));
-      } finally {
-        this._setPending(row.id, 'duplicate', false);
-      }
-    },
-
-    // ---------- Strategy advisor (suggest-only) ----------
-    async openStrategy() {
-      this.strategy.open = true;
-      this.loadProfile();
-      if (!this.strategy.chat.messages.length) this._loadChat();
-      if (!this.strategy.data && !this.strategy.loading) await this.runStrategy();
-    },
-    closeStrategy() { this.strategy.open = false; },
-    // Jump from any analysis card into the chat with a precise, numbers-grounded question.
-    askAdvisor(q) {
-      if (!q || this.strategy.chat.loading) return;
-      this.setStrategyTab('chat');
-      this.strategy.chat.input = q;
-      this.$nextTick(() => this.sendChat());
-    },
-    // Live % vs the entity's current daily budget, recomputed as the operator edits the approval.
-    budgetPct(a) {
-      const cur = a && a.current ? Number(a.current.dailyBudget) : NaN;
-      const v = Number(a && a.editBudget);
-      if (!Number.isFinite(cur) || cur <= 0 || !Number.isFinite(v)) return null;
-      return Math.round(((v - cur) / cur) * 1000) / 10;
-    },
-    _initApproval(a) {
-      a.status = 'pending';
-      if (a.tool === 'set_budget') a.editBudget = (a.args && a.args.daily_budget != null) ? a.args.daily_budget : '';
-      return a;
-    },
-    // Persist the visible conversation so a page reload doesn't lose the thread (the server already
-    // logs turns to strategy_chat for debugging; this restores the exact UI state — cards + previews).
-    _persistChat() {
-      try {
-        const c = this.strategy.chat;
-        const payload = { sessionId: c.sessionId, messages: c.messages, savedAt: Date.now() };
-        let s = JSON.stringify(payload);
-        if (s.length > 1500000) {
-          s = JSON.stringify({ ...payload, messages: c.messages.map((m) => ({ ...m, previews: [] })) });
-        }
-        localStorage.setItem('gfm.advisorChat.v1', s);
-      } catch (e) { /* non-fatal */ }
-    },
-    _loadChat() {
-      try {
-        const raw = localStorage.getItem('gfm.advisorChat.v1');
-        if (!raw) return;
-        const p = JSON.parse(raw);
-        if (!p || !Array.isArray(p.messages) || !p.messages.length) return;
-        if (Date.now() - (p.savedAt || 0) > 24 * 3600 * 1000) { localStorage.removeItem('gfm.advisorChat.v1'); return; }
-        this.strategy.chat.messages = p.messages.map((m) => ({
-          ...m,
-          streaming: false,
-          tools: (m.tools || []).map((t) => ({ ...t, status: t.status === 'running' ? 'done' : t.status })),
-          approvals: (m.approvals || []).map((a) => ({ ...a, status: a.status === 'approving' ? 'pending' : a.status })),
-        }));
-        this.strategy.chat.sessionId = p.sessionId || '';
-      } catch (e) { /* non-fatal */ }
-    },
-    newChat() {
-      const c = this.strategy.chat;
-      c.messages = []; c.input = ''; c.error = ''; c.sessionId = '';
-      try { localStorage.removeItem('gfm.advisorChat.v1'); } catch (e) { /* non-fatal */ }
-    },
-    // Re-send the last user message after a failed turn (drops the empty assistant placeholder first).
-    retryChat() {
-      const c = this.strategy.chat;
-      if (c.loading) return;
-      while (c.messages.length && c.messages[c.messages.length - 1].role === 'assistant' && !c.messages[c.messages.length - 1].content) c.messages.pop();
-      let content = '';
-      for (let i = c.messages.length - 1; i >= 0; i -= 1) {
-        if (c.messages[i].role === 'user' && !c.messages[i].system) { content = c.messages[i].content; c.messages.splice(i, 1); break; }
-      }
-      c.error = '';
-      if (!content) return;
-      c.input = content;
-      this.sendChat();
-    },
-    setStrategyTab(tab) {
-      if (this.strategy.tab === tab) return;
-      this.strategy.tab = tab;
-      this.runActiveTabAI();
-    },
-    runActiveTabAI() {
-      if (!this.strategy.data) return;
-      if (this.strategy.tab === 'briefing') {
-        if (!this.strategy.briefing && !this.strategy.briefingLoading) this.runBriefing();
-      } else if (this.strategy.tab === 'analysis') {
-        if (!this.strategy.narrative && !this.strategy.aiLoading) this.runStrategyNarrative();
-      }
-    },
-    setStrategyWindow(w) {
-      if (this.strategy.window === w) return;
-      this.strategy.window = w;
-      this.runStrategy();
-    },
-    async runStrategy() {
-      this.strategy.loading = true;
-      this.strategy.error = '';
-      this.strategy.narrative = null;
-      this.strategy.briefing = null;
-      try {
-        const r = await fetch('/api/strategy/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ window: this.strategy.window }),
-        });
-        const data = await r.json();
-        if (!data.ok) { this.strategy.error = data.message || data.error || 'Analysis failed'; this.strategy.data = null; return; }
-        this.strategy.data = data;
-        this.runActiveTabAI();
-      } catch (e) {
-        this.strategy.error = String(e);
-      } finally {
-        this.strategy.loading = false;
-        this.refreshUsage();
-      }
-    },
-    async runBriefing() {
-      this.strategy.briefingLoading = true;
-      try {
-        const r = await fetch('/api/strategy/briefing', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-        const data = await r.json();
-        if (data.ok) this.strategy.briefing = data.briefing;
-        else this.strategy.briefing = { error: data.message || data.error || 'AI unavailable' };
-      } catch (e) {
-        this.strategy.briefing = { error: String(e) };
-      } finally {
-        this.strategy.briefingLoading = false;
-      }
-    },
-    async copyBriefing() {
-      const b = this.strategy.briefing;
-      if (!b || b.error) return;
-      const lines = [];
-      if (b.headline) lines.push(b.headline, '');
-      if (b.standing_today) lines.push(b.standing_today, '');
-      if (b.confident_actions && b.confident_actions.length) {
-        lines.push('CONFIDENT ACTIONS:');
-        b.confident_actions.forEach((a) => {
-          lines.push(`- [${a.confidence}] ${a.title} — ${a.why}` + (a.what_to_wait_for ? ` (wait: ${a.what_to_wait_for})` : ''));
-        });
-        lines.push('');
-      }
-      if (b.opportunities && b.opportunities.length) { lines.push('OPPORTUNITIES:'); b.opportunities.forEach((o) => lines.push(`- ${o}`)); lines.push(''); }
-      if (b.watch && b.watch.length) { lines.push('WATCH (not yet confident):'); b.watch.forEach((w) => lines.push(`- ${w}`)); lines.push(''); }
-      if (b.do_not_act && b.do_not_act.length) { lines.push("DON'T OVERREACT TO:"); b.do_not_act.forEach((n) => lines.push(`- ${n}`)); lines.push(''); }
-      if (b.growth_moves && b.growth_moves.length) { lines.push('GROWTH MOVES:'); b.growth_moves.forEach((g) => lines.push(`- [${g.impact}/${g.effort}] ${g.title} — ${g.why}`)); }
-      const text = lines.join('\n').trim();
-      this._copyText(text);
-    },
-    chatSuggest(q) { this.strategy.chat.input = q; this.sendChat(); },
-    async sendChat(overrideMessage) {
-      const c = this.strategy.chat;
-      const isAuto = overrideMessage != null;
-      const message = (isAuto ? String(overrideMessage) : (c.input || '')).trim();
-      if (!message || c.loading) return;
-      if (!this.strategy.data) { c.error = 'Run an analysis first so the advisor has data to reason over.'; return; }
-      if (!c.sessionId) c.sessionId = 'sess_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-      c.error = '';
-      const history = c.messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
-      // Auto-continue messages (after an approve/reject) are shown as a subtle system line, not a user bubble.
-      c.messages.push({ role: 'user', content: message, system: isAuto });
-      if (!isAuto) c.input = '';
-      c.loading = true;
-      this.$nextTick(() => this.scrollChatBottom());
-      let asstIdx = -1;
-      const ensureAsst = () => {
-        if (asstIdx < 0) { asstIdx = c.messages.push({ role: 'assistant', content: '', model: null, streaming: true, tools: [], previews: [], approvals: [] }) - 1; }
-        return asstIdx;
-      };
-      try {
-        const r = await fetch('/api/strategy/chat', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, history, stream: true, sessionId: c.sessionId }),
-        });
-        if (!r.body || typeof r.body.getReader !== 'function') {
-          const data = await r.json().catch(() => ({}));
-          if (data.ok) {
-            const i = ensureAsst(); c.messages[i].content = data.reply; c.messages[i].model = data.model; c.messages[i].streaming = false;
-            (data.approvals || []).forEach((a) => { this._initApproval(a); a.armed = data.advisorWritesEnabled === true; c.messages[i].approvals.push(a); });
-            this.finalizeAssistant(c.messages[i]);
-          }
-          else c.error = data.message || data.error || 'Advisor unavailable';
-          return;
-        }
-        const reader = r.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split('\n');
-          buf = lines.pop() ?? '';
-          for (const line of lines) {
-            const t = line.trim();
-            if (!t.startsWith('data:')) continue;
-            const payload = t.slice(5).trim();
-            if (!payload) continue;
-            let ev; try { ev = JSON.parse(payload); } catch { continue; }
-            if (ev.type === 'delta') { const i = ensureAsst(); c.messages[i].content += ev.text; this.scrollChatBottom(); }
-            else if (ev.type === 'tool') {
-              const m = c.messages[ensureAsst()];
-              if (ev.phase === 'start') {
-                m.tools.push({ name: ev.name, args: ev.args || {}, label: this.toolLabel(ev.name, ev.args), status: 'running', summary: '', expanded: false });
-              } else {
-                const hasArgs = ev.args && typeof ev.args === 'object' && Object.keys(ev.args).length;
-                const t = [...m.tools].reverse().find((x) => x.name === ev.name && x.status === 'running');
-                if (t) {
-                  t.status = ev.ok ? 'done' : 'failed';
-                  t.summary = ev.summary || '';
-                  // The streamed "start" fires before args finish streaming (args:{}), so backfill the
-                  // real args + relabel now that the done event carries them.
-                  if (hasArgs) { t.args = ev.args; t.label = this.toolLabel(ev.name, ev.args); }
-                } else {
-                  m.tools.push({ name: ev.name, args: ev.args || {}, label: this.toolLabel(ev.name, ev.args || {}), status: ev.ok ? 'done' : 'failed', summary: ev.summary || '', expanded: false });
-                }
-                if (ev.preview && ev.preview.iframe) m.previews.push(ev.preview);
-              }
-              this.scrollChatBottom();
-            }
-            else if (ev.type === 'approval') {
-              const m = c.messages[ensureAsst()];
-              const a = ev.approval || {};
-              this._initApproval(a);
-              a.armed = ev.armed === true;
-              m.approvals.push(a);
-              this.scrollChatBottom();
-            }
-            else if (ev.type === 'done') { const i = ensureAsst(); c.messages[i].model = ev.model; c.messages[i].streaming = false; this.finalizeAssistant(c.messages[i]); }
-            else if (ev.type === 'error') { c.error = ev.message || ev.error || 'Advisor unavailable'; }
-          }
-        }
-        if (asstIdx >= 0) c.messages[asstIdx].streaming = false;
-        if (asstIdx < 0 && !c.error) c.error = 'No response from advisor.';
-      } catch (e) {
-        if (asstIdx >= 0) c.messages[asstIdx].streaming = false;
-        c.error = String(e);
-      } finally {
-        c.loading = false;
-        this.refreshUsage();
-        this._persistChat();
-        this.$nextTick(() => this.scrollChatBottom());
-      }
-    },
-    scrollChatBottom() {
-      const el = document.getElementById('advisor-chat-scroll');
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-    // Tier D: pull the trailing "[FOLLOWUPS] a | b | c" line out of the answer into clickable chips.
-    finalizeAssistant(m) {
-      if (!m || typeof m.content !== 'string') return;
-      const idx = m.content.search(/\**\s*\[FOLLOWUPS\]/i);
-      if (idx < 0) { m.followups = m.followups || []; return; }
-      const tail = m.content.slice(idx).replace(/\**\s*\[FOLLOWUPS\][:\-\s]*/i, '');
-      m.content = m.content.slice(0, idx).replace(/\s+$/, '');
-      m.followups = tail.split(/\s*\|\s*/).map((s) => s.replace(/[\s*_>#-]+$/g, '').trim()).filter((s) => s.length > 2).slice(0, 3);
-    },
-    useFollowup(q) {
-      const c = this.strategy.chat;
-      if (c.loading || !q) return;
-      c.input = q;
-      this.sendChat();
-    },
-    // Tier A: load/save the standing operator brief (account-level + per-campaign goals).
-    async loadProfile() {
-      try {
-        const r = await fetch('/api/strategy/profile');
-        const data = await r.json().catch(() => ({}));
-        if (data.ok) {
-          const p = data.profile || {};
-          this.strategy.profile = {
-            riskTolerance: p.riskTolerance || 'balanced',
-            brandVoice: p.brandVoice || '', notes: p.notes || '',
-            campaigns: Array.isArray(p.campaigns) ? p.campaigns.map((c) => ({
-              name: c.name || '', goal: c.goal || '', targetCpa: c.targetCpa || '',
-              targetRoas: c.targetRoas || '', sacred: !!c.sacred, notes: c.notes || '',
-            })) : [],
-          };
-          this.strategy.armed = data.armed === true;
-          this.strategy.envForced = data.envForced === true;
-        }
-      } catch (e) { /* non-fatal */ }
-    },
-    async saveProfile() {
-      const s = this.strategy;
-      s.briefSaving = true; s.briefSaved = false;
-      try {
-        const p = s.profile;
-        const r = await fetch('/api/strategy/profile', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            riskTolerance: p.riskTolerance, brandVoice: p.brandVoice, notes: p.notes,
-            campaigns: (p.campaigns || []).filter((c) => (c.name || '').trim()),
-          }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (data.ok) { s.briefSaved = true; setTimeout(() => { s.briefSaved = false; }, 2500); }
-        else { s.chat.error = data.message || 'Could not save brief'; }
-      } catch (e) { s.chat.error = String(e); }
-      finally { s.briefSaving = false; }
-    },
-    addCampaignGoal(name = '') {
-      this.strategy.profile.campaigns.push({ name, goal: '', targetCpa: '', targetRoas: '', sacred: false, notes: '' });
-    },
-    removeCampaignGoal(i) { this.strategy.profile.campaigns.splice(i, 1); },
-    // Campaign names from the loaded snapshot, minus ones already in the brief (for the picker).
-    get snapshotCampaignNames() {
-      const used = new Set((this.strategy.profile.campaigns || []).map((c) => (c.name || '').trim()));
-      return ((this.strategy.data && this.strategy.data.campaigns) || [])
-        .map((c) => c.name).filter((n) => n && !used.has(n));
-    },
-    get strategyDataAgeLabel() {
-      const d = this.strategy.data;
-      if (!d || !d.generatedAt) return 'no analysis loaded yet';
-      const t = new Date(d.generatedAt).getTime();
-      if (Number.isNaN(t)) return d.window || '';
-      const sec = Math.max(0, Math.floor((this.nowTick - t) / 1000));
-      const rel = sec < 60 ? `${sec}s ago` : sec < 3600 ? `${Math.floor(sec / 60)}m ago` : `${Math.floor(sec / 3600)}h ago`;
-      return `as of ${rel} · ${d.window || ''}`;
-    },
-    get strategyDataStale() {
-      const d = this.strategy.data;
-      if (!d || !d.generatedAt) return false;
-      const t = new Date(d.generatedAt).getTime();
-      if (Number.isNaN(t)) return false;
-      return (this.nowTick - t) > 30 * 60 * 1000;
-    },
-    // Arm/disarm real execution at runtime (per-action approval still required).
-    async toggleArm() {
-      const s = this.strategy;
-      if (s.envForced || s.armBusy) return;
-      s.armBusy = true;
-      const next = !s.armed;
-      try {
-        const r = await fetch('/api/strategy/arm', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ armed: next }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (data.ok) { s.armed = data.armed === true; }
-      } catch (e) { s.chat.error = String(e); }
-      finally { s.armBusy = false; }
-    },
-    toolLabel(name, args) {
-      const verbs = {
-        get_fresh_insights: 'Fetching live insights',
-        get_change_history: 'Reading change history',
-        get_ad_preview: 'Loading ad preview',
-        get_audiences: 'Inspecting audiences',
-        get_signal: 'Checking tracking/CAPI',
-        re_analyze: 'Re-analyzing account',
-        get_comments: 'Reading comments',
-        compute: 'Computing',
-        query_data: 'Querying snapshot',
-        get_query_schema: 'Reading data schema',
-        measure_incrementality: 'Measuring incrementality',
-        record_finding: 'Saving finding',
-      };
-      let label = verbs[name] || name;
-      if (name === 'compute' && args && args.op) { label += ` · ${String(args.op).replace(/_/g, ' ')}`; return label; }
-      if (name === 'query_data') return label;
-      if (name === 'record_finding') { if (args && args.title) label += ` · ${String(args.title).slice(0, 40)}`; return label; }
-      const hint = args && (args.name || (args.level === 'account' ? 'account' : '') || args.scope || args.window);
-      if (hint) label += ` · ${hint}`;
-      if (args && args.breakdown && args.breakdown !== 'none') label += ` (${args.breakdown})`;
-      if (args && args.granularity === 'daily') label += ' (daily)';
-      if (name === 'get_fresh_insights' && args && args.level === 'ad') label += ' (ads)';
-      return label;
-    },
-    toolIcon(name) {
-      const p = {
-        get_fresh_insights: 'M4 19V5m0 14h16M8 16l3-4 3 2 4-6',
-        get_change_history: 'M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z',
-        get_ad_preview: 'M4 5h16v14H4zM4 15l4-4 3 3 4-5 5 6',
-        get_audiences: 'M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 10-4-4 4 4 0 004 4z',
-        get_signal: 'M12 20v-6m0 0V8m0 6l4-3m-4 3l-4-3M5 12a7 7 0 1114 0',
-        re_analyze: 'M4 4v6h6M20 20v-6h-6M5 13a7 7 0 0012 4M19 11a7 7 0 00-12-4',
-        get_comments: 'M8 10h8M8 14h5M21 12a8 8 0 01-11.6 7.1L4 20l1-4.3A8 8 0 1121 12z',
-        compute: 'M9 7h6M9 11h6m-6 4h3M5 4h14v16H5z',
-        query_data: 'M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zm0 0v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7',
-        get_query_schema: 'M4 6h16M4 12h16M4 18h10',
-        measure_incrementality: 'M3 17l6-6 4 4 7-8M14 7h7v7',
-        record_finding: 'M5 4h11l3 3v13H5zM9 4v5h6',
-      }[name] || 'M5 12h14';
-      return `<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="${p}"/></svg>`;
-    },
-    prettyArgs(args) {
-      if (!args || typeof args !== 'object') return '(no arguments)';
-      const keys = Object.keys(args);
-      if (!keys.length) return '(no arguments)';
-      return keys.map((k) => `${k}: ${typeof args[k] === 'object' ? JSON.stringify(args[k]) : args[k]}`).join('\n');
-    },
-    async approveAction(mi, ai) {
-      const c = this.strategy.chat;
-      const m = c.messages[mi]; if (!m || !m.approvals) return;
-      const a = m.approvals[ai]; if (!a || a.status !== 'pending' || c.loading) return;
-      // Apply any operator edits to the proposed value before executing (the server re-validates the
-      // entity + adManager guards; the value/text is the only thing that changed).
-      const args = { ...(a.args || {}) };
-      if (a.tool === 'set_budget') {
-        const v = Number(a.editBudget);
-        if (!Number.isFinite(v) || v <= 0) { a.resultMsg = 'Enter a valid daily budget.'; a.status = 'failed'; return; }
-        args.daily_budget = v;
-        a.summary = `Set ${a.level} "${a.entityName}" daily budget to $${v}/day`;
-      }
-      if (a.tool === 'moderate_comment' && a.args && a.args.action === 'reply') {
-        const txt = (a.replyText || '').trim();
-        if (!txt) { a.resultMsg = 'Reply text cannot be empty.'; a.status = 'failed'; return; }
-        args.reply_text = txt;
-        a.summary = `Reply to ${a.entityName}: "${txt.slice(0, 60)}"`;
-      }
-      a.status = 'approving';
-      a.decidedOutcome = null;
-      try {
-        const r = await fetch('/api/strategy/tool/execute', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: a.tool, args, sessionId: c.sessionId, decision: 'approve' }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (data.ok) { a.status = 'applied'; a.resultMsg = 'Applied to Meta'; a.decidedOutcome = `"${a.summary}" was APPLIED successfully`; }
-        else if (data.error === 'advisor_writes_disabled') { a.status = 'dryrun'; a.resultMsg = 'Live actions are off — nothing sent to Meta'; a.decidedOutcome = `"${a.summary}" was approved but Live actions are OFF, so nothing was sent to Meta (dry-run)`; }
-        else { a.status = 'failed'; a.resultMsg = (data.result && data.result.message) || data.message || data.error || 'Failed'; a.decidedOutcome = `"${a.summary}" did NOT apply (${a.resultMsg})`; }
-      } catch (e) { a.status = 'failed'; a.resultMsg = String(e); a.decidedOutcome = `"${a.summary}" failed (${String(e)})`; }
-      this._persistChat();
-      this.$nextTick(() => this.scrollChatBottom());
-      await this.continueAfterApprovals(mi);
-    },
-    async rejectAction(mi, ai) {
-      const c = this.strategy.chat;
-      const m = c.messages[mi]; const a = m && m.approvals && m.approvals[ai];
-      if (!a || a.status !== 'pending' || c.loading) return;
-      a.status = 'rejected';
-      a.decidedOutcome = `"${a.summary}" was REJECTED — do not take that action`;
-      try {
-        await fetch('/api/strategy/tool/execute', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: a.tool, args: a.args, sessionId: c.sessionId, decision: 'reject' }),
-        });
-      } catch {}
-      this._persistChat();
-      this.$nextTick(() => this.scrollChatBottom());
-      await this.continueAfterApprovals(mi);
-    },
-    // Only resume the AI once EVERY card in this message is decided, then send ONE combined turn —
-    // otherwise rejecting card #1 makes the AI reply while card #2 is still waiting on the operator.
-    async continueAfterApprovals(mi) {
-      const c = this.strategy.chat;
-      const m = c.messages[mi]; if (!m || !m.approvals) return;
-      if (m.approvals.some((x) => x.status === 'pending' || x.status === 'approving')) return; // still waiting
-      if (m.followupSent) return; // guard against double-continue
-      m.followupSent = true;
-      const decisions = m.approvals.map((x) => x.decidedOutcome).filter(Boolean);
-      if (!decisions.length) return;
-      const body = decisions.length === 1
-        ? `[Operator decision] ${decisions[0]}. Briefly confirm what changed (or didn't) and what to watch next. Do not re-propose any rejected action.`
-        : `[Operator decisions on ${decisions.length} proposals]\n- ${decisions.join('\n- ')}\nBriefly confirm the net result and what to watch next. Do not re-propose any rejected action.`;
-      await this.sendChat(body);
-    },
-    renderMd(text) {
-      const esc = String(text || '')
-        .replace(/\**\s*\[FOLLOWUPS\][\s\S]*$/i, '')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const lines = esc.split('\n');
-      let html = ''; let listType = null;
-      const closeList = () => { if (listType) { html += listType === 'ol' ? '</ol>' : '</ul>'; listType = null; } };
-      const inline = (s) => s
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-meta-gray-100 text-[11px]">$1</code>')
-        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, t, u) => `<a href="${u.replace(/&amp;/g, '&')}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">${t}</a>`);
-      for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i].trim();
-        const next = i + 1 < lines.length ? lines[i + 1].trim() : '';
-        if (line.includes('|') && /-/.test(next) && /^\|?[\s:|-]+\|?$/.test(next)) {
-          closeList();
-          const splitRow = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
-          const headers = splitRow(line);
-          i += 1;
-          const rows = [];
-          while (i + 1 < lines.length && lines[i + 1].includes('|') && lines[i + 1].trim() !== '') { i += 1; rows.push(splitRow(lines[i].trim())); }
-          html += '<div class="overflow-x-auto my-1"><table class="w-full text-[11px] border-collapse">';
-          html += '<thead><tr>' + headers.map((h) => `<th class="text-left font-semibold border-b border-gray-200 px-1.5 py-1">${inline(h)}</th>`).join('') + '</tr></thead>';
-          html += '<tbody>' + rows.map((r) => '<tr>' + r.map((c) => `<td class="border-b border-gray-100 px-1.5 py-1 align-top">${inline(c)}</td>`).join('') + '</tr>').join('') + '</tbody>';
-          html += '</table></div>';
-          continue;
-        }
-        if (/^#{1,6}\s+/.test(line)) {
-          closeList();
-          html += `<div class="font-semibold mt-2">${inline(line.replace(/^#{1,6}\s+/, ''))}</div>`;
-        } else if (/^\d+\.\s+/.test(line)) {
-          if (listType !== 'ol') { closeList(); html += '<ol class="list-decimal list-inside space-y-0.5 my-1">'; listType = 'ol'; }
-          html += `<li>${inline(line.replace(/^\d+\.\s+/, ''))}</li>`;
-        } else if (/^[-*]\s+/.test(line)) {
-          if (listType !== 'ul') { closeList(); html += '<ul class="list-disc list-inside space-y-0.5 my-1">'; listType = 'ul'; }
-          html += `<li>${inline(line.replace(/^[-*]\s+/, ''))}</li>`;
-        } else if (line === '') {
-          closeList();
-          html += '<div class="h-2"></div>';
-        } else {
-          closeList();
-          html += `<div>${inline(line)}</div>`;
-        }
-      }
-      closeList();
-      return html;
-    },
-    async _copyText(text) {
-      try {
-        await navigator.clipboard.writeText(text);
-        this.strategy.copied = true;
-        setTimeout(() => { this.strategy.copied = false; }, 1800);
-      } catch (e) {
-        console.error('[strategy] copy briefing failed', e);
-      }
-    },
-    async runStrategyNarrative() {
-      this.strategy.aiLoading = true;
-      try {
-        const r = await fetch('/api/strategy/narrative', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-        const data = await r.json();
-        if (data.ok) this.strategy.narrative = data.narrative;
-        else this.strategy.narrative = { error: data.message || data.error || 'AI unavailable' };
-      } catch (e) {
-        this.strategy.narrative = { error: String(e) };
-      } finally {
-        this.strategy.aiLoading = false;
-      }
-    },
-    sevClass(sev) {
-      if (sev === 'high') return 'bg-red-50 text-red-700 border-red-200';
-      if (sev === 'medium') return 'bg-yellow-50 text-yellow-700 border-yellow-200';
-      return 'bg-blue-50 text-blue-700 border-blue-200';
-    },
-    strategyChip(s) {
-      const map = {
-        consolidate: 'Consolidate', scale_vertical: 'Scale ↑ (budget)', scale_horizontal: 'Scale → (duplicate)',
-        duplicate: 'Duplicate', pause: 'Pause', creative_refresh: 'Refresh creative',
-        daypart_weight: 'Day weighting', fix_tracking: 'Fix tracking', hold: 'Hold', stop_loss: 'Stop-loss',
-      };
-      return map[s] || s;
-    },
-    fmtRoasX(v) { return v == null ? '—' : Number(v).toFixed(2) + 'x'; },
-    fmtPctSigned(v) {
-      if (v == null) return '—';
-      const n = Number(v);
-      return (n > 0 ? '+' : '') + n.toFixed(1) + '%';
-    },
-
-    // ---- Daily Briefing helpers ----
-    confClass(tier) {
-      if (tier === 'high') return 'bg-green-100 text-green-800 border-green-300';
-      if (tier === 'medium') return 'bg-yellow-100 text-yellow-800 border-yellow-300';
-      if (tier === 'low') return 'bg-gray-100 text-gray-600 border-gray-300';
-      return 'bg-gray-50 text-gray-400 border-gray-200';
-    },
-    actionChip(a) {
-      const map = {
-        scale_up: '▲ Scale up', scale_down: '▼ Scale down', pause: '■ Pause / kill',
-        duplicate: '⎘ Duplicate', refresh_creative: '✎ Refresh creative',
-        narrow_targeting: '⊖ Trim segment', expand_targeting: '⊕ Expand segment',
-        cost_cap_candidate: '◈ Cost-cap candidate', hold: '= Hold', watch: '◷ Watch',
-      };
-      return map[a] || a;
-    },
-    actionClass(a) {
-      if (a === 'pause' || a === 'scale_down' || a === 'narrow_targeting') return 'bg-red-50 text-red-700 border-red-200';
-      if (a === 'scale_up' || a === 'expand_targeting' || a === 'duplicate') return 'bg-green-50 text-green-700 border-green-200';
-      if (a === 'refresh_creative' || a === 'cost_cap_candidate') return 'bg-yellow-50 text-yellow-700 border-yellow-200';
-      if (a === 'watch') return 'bg-blue-50 text-blue-700 border-blue-200';
-      return 'bg-gray-50 text-gray-600 border-gray-200';
-    },
-    verdictClass(v) {
-      if (v === 'better' || v === 'healthy') return 'text-green-700';
-      if (v === 'worse' || v === 'saturating' || v === 'anomalous') return 'text-red-700';
-      if (v === 'watch') return 'text-yellow-700';
-      return 'text-meta-gray-600';
-    },
-    zClass(z) {
-      if (z == null) return 'text-meta-gray-500';
-      const a = Math.abs(Number(z));
-      if (a >= 2) return 'text-red-600 font-semibold';
-      if (a >= 1) return 'text-yellow-700';
-      return 'text-green-700';
-    },
-    fmtZ(z) { return z == null ? '—' : (Number(z) > 0 ? '+' : '') + Number(z).toFixed(1) + 'σ'; },
-    fmtCI(lo, hi) { return (lo == null || hi == null) ? '' : `$${lo}–$${hi}`; },
-    fmtInt(n) { return n == null || !Number.isFinite(Number(n)) ? '—' : Math.round(Number(n)).toLocaleString(); },
-    growthApplClass(a) {
-      if (a === 'foundational') return 'bg-purple-50 text-purple-700 border-purple-200';
-      if (a === 'primary') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-      if (a === 'secondary' || a === 'ready') return 'bg-teal-50 text-teal-700 border-teal-200';
-      if (a === 'gated') return 'bg-amber-50 text-amber-700 border-amber-200';
-      if (a === 'avoid') return 'bg-red-50 text-red-600 border-red-200';
-      return 'bg-gray-50 text-gray-600 border-gray-200';
-    },
-
-    toastError(title, message) { this.toast = { show: true, type: 'error', title, message }; setTimeout(() => (this.toast.show = false), 7000); },
-    toastInfo(title, message) { this.toast = { show: true, type: 'info', title, message }; setTimeout(() => (this.toast.show = false), 4000); },
+      const s = Math.round((this.now - Date.parse(iso)) / 1000);
+      if (s < 60) return 'just now';
+      if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+      if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+      if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
+      return new Date(iso).toLocaleDateString();
+    },
+    when(iso) { return iso ? new Date(iso).toLocaleString() : '—'; },
+    clip(s, n = 140) { s = s || ''; return s.length > n ? `${s.slice(0, n)}…` : s; },
+    secs(ms) { return ms == null ? '' : `${(ms / 1000).toFixed(1)}s`; },
   };
 }
+
+window.app = app;

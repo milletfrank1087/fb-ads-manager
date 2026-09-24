@@ -1,8 +1,8 @@
 import { fb } from './fbClient.js';
-import { maskToken } from './env.js';
+import { config, maskToken } from './env.js';
 import { log } from './logger.js';
 
-const TARGET_PAGE_ID = (process.env.FB_TARGET_PAGE_ID || '113297813778299').trim();
+const TARGET_PAGE_ID = config.targetPageId;
 const TTL_MS = 60 * 60 * 1000;
 
 const cache = { token: null, pageId: null, pageName: null, mintedAtMs: 0 };

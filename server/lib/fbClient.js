@@ -4,401 +4,190 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { config, maskToken } from './env.js';
 import { log } from './logger.js';
 import { safety } from './safety.js';
-import { store } from './store.js';
 import { pageToken } from './pageToken.js';
 
-const proxyAgent = config.proxyUrl ? new HttpsProxyAgent(config.proxyUrl) : null;
-
-const httpOpts = {
+const http = axios.create({
   baseURL: config.graphBase,
   timeout: config.timeoutMs,
   validateStatus: () => true,
-  headers: {
-    'User-Agent': config.userAgent,
-    'Accept': 'application/json',
-  },
-};
-if (proxyAgent) {
-  httpOpts.httpsAgent = proxyAgent;
-  httpOpts.proxy = false;
-}
-const http = axios.create(httpOpts);
+  headers: { 'User-Agent': config.userAgent, Accept: 'application/json' },
+  ...(config.proxyUrl ? { httpsAgent: new HttpsProxyAgent(config.proxyUrl), proxy: false } : {}),
+});
 
-log.info('fb.client.init', { proxy: proxyAgent ? `${config.proxyHost}:${config.proxyPort}` : 'none (direct)' });
+log.info('fb.client.init', { proxy: config.proxyUrl ? `${config.proxyHost}:${config.proxyPort}` : 'none (direct connection)' });
 
-let lastCallAt = 0;
-let callCounter = 0;
-
-// A non-2xx with an EMPTY body returned faster than a real Meta round-trip (~600ms+) is a
-// proxy/egress refusal that never reached Meta — see the http_error branch. Because the request
-// provably did NOT reach Meta, retrying is safe even for writes (no double-apply risk). Bounded.
+// A non-2xx with an empty body that returns this fast never reached Meta (proxy/egress refusal),
+// so retrying cannot double-apply a write.
 const PROXY_REJECT_MAX_MS = 400;
 const PROXY_REJECT_MAX_RETRIES = 2;
+
+let callCounter = 0;
+let usagePct = 0;
+
+// Every request waits its turn here, so the minimum gap holds even when callers run concurrently.
+let queue = Promise.resolve();
+let lastCallAt = 0;
+function throttleSlot() {
+  const slot = queue.then(async () => {
+    const gap = config.minGapMs + Math.floor(Math.random() * 200);
+    const wait = lastCallAt + gap - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (usagePct >= 90) {
+      log.warn('fb.backoff', { usagePct, waitS: 60 });
+      await new Promise((r) => setTimeout(r, 60_000));
+    } else if (usagePct >= 80) {
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+    lastCallAt = Date.now();
+  });
+  queue = slot.catch(() => {});
+  return slot;
+}
 
 function appSecretProof(token) {
   return crypto.createHmac('sha256', config.appSecret).update(token).digest('hex');
 }
 
-function maxPct(obj) {
-  if (!obj || typeof obj !== 'object') return 0;
-  return Math.max(0, ...['call_count', 'total_time', 'total_cputime'].map((k) => Number(obj[k] || 0)));
-}
-
-function bucMaxPct(buc) {
-  if (!buc || typeof buc !== 'object') return { pct: 0, etr: 0 };
-  let pct = 0;
-  let etr = 0;
-  for (const arr of Object.values(buc)) {
-    if (!Array.isArray(arr)) continue;
-    for (const e of arr) {
-      if (!e || typeof e !== 'object') continue;
-      pct = Math.max(pct, ...['call_count', 'total_time', 'total_cputime'].map((k) => Number(e[k] || 0)));
-      const t = Number(e.estimated_time_to_regain_access || 0);
-      if (Number.isFinite(t) && t > etr) etr = t;
-    }
-  }
-  return { pct, etr };
-}
-
-function parseJsonHeader(headers, name) {
-  const raw = headers?.[name] || headers?.[name.toLowerCase()];
+function parseHeader(headers, name) {
+  const raw = headers?.[name];
   if (!raw) return null;
-  try {
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
-  } catch {
-    return null;
-  }
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
 }
 
-function captureUsage(method, where, response) {
-  const headers = response?.headers || {};
-  const xAppUsage = parseJsonHeader(headers, 'x-app-usage');
-  const xBuc = parseJsonHeader(headers, 'x-business-use-case-usage');
-  const xAdAcct = parseJsonHeader(headers, 'x-ad-account-usage');
-  const xInsightsThrottle = parseJsonHeader(headers, 'x-fb-ads-insights-throttle');
-
-  const appMaxPct = maxPct(xAppUsage);
-  const bucInfo = bucMaxPct(xBuc);
-  const insightsAppPct = Number(xInsightsThrottle?.app_id_util_pct || 0);
-  const insightsAccPct = Number(xInsightsThrottle?.acc_id_util_pct || 0);
-  const tier = xInsightsThrottle?.ads_api_access_tier || null;
-
-  const sample = {
-    ts: new Date().toISOString(),
-    where,
-    method,
-    httpStatus: response?.status ?? null,
-    xAppUsage,
-    xBusinessUseCaseUsage: xBuc,
-    xAdAccountUsage: xAdAcct,
-    xFbAdsInsightsThrottle: xInsightsThrottle,
-    appMaxPct,
-    bucMaxPct: bucInfo.pct,
-    insightsAppPct,
-    insightsAccPct,
-    adsApiAccessTier: tier,
+// Highest utilisation % across x-app-usage / x-business-use-case-usage, plus Meta's
+// estimated minutes until access returns.
+function readUsage(headers) {
+  let pct = 0;
+  let eta = 0;
+  const pick = (o) => {
+    if (!o || typeof o !== 'object') return;
+    for (const k of ['call_count', 'total_time', 'total_cputime']) pct = Math.max(pct, Number(o[k] || 0));
+    eta = Math.max(eta, Number(o.estimated_time_to_regain_access || 0));
   };
-  try {
-    store.insertUsageSample(sample);
-  } catch (err) {
-    log.error('fb.usage.persist_failed', { error: String(err) });
-  }
-  return { sample, bucInfo, appMaxPct };
+  pick(parseHeader(headers, 'x-app-usage'));
+  const buc = parseHeader(headers, 'x-business-use-case-usage');
+  if (buc) for (const arr of Object.values(buc)) if (Array.isArray(arr)) arr.forEach(pick);
+  return { pct, eta };
 }
-
-async function throttle(usageHint) {
-  const gap = Date.now() - lastCallAt;
-  const jitter = Math.floor(Math.random() * 200);
-  const minGap = config.minGapMs + jitter;
-  if (gap < minGap) {
-    await new Promise((r) => setTimeout(r, minGap - gap));
-  }
-  if (usageHint?.appMaxPct >= 90 || usageHint?.bucMaxPct >= 90 || usageHint?.insightsMaxPct >= 90) {
-    log.warn('fb.preemptive_backoff', { wait_s: 60, ...usageHint });
-    await new Promise((r) => setTimeout(r, 60_000));
-  } else if (usageHint?.appMaxPct >= 80 || usageHint?.bucMaxPct >= 80 || usageHint?.insightsMaxPct >= 80) {
-    log.warn('fb.elevated_usage', { wait_s: 5, ...usageHint });
-    await new Promise((r) => setTimeout(r, 5_000));
-  }
-  lastCallAt = Date.now();
-}
-
-let lastUsageHint = { appMaxPct: 0, bucMaxPct: 0, insightsMaxPct: 0 };
 
 async function resolveToken(tokenKind) {
-  if (tokenKind === 'page') {
-    const r = await pageToken.get();
-    if (!r.ok) return { ok: false, error: 'page_token_unavailable', detail: r };
-    return { ok: true, token: r.token };
-  }
-  return { ok: true, token: config.systemToken };
+  if (tokenKind !== 'page') return { ok: true, token: config.systemToken };
+  const r = await pageToken.get();
+  return r.ok ? { ok: true, token: r.token } : { ok: false, error: 'page_token_unavailable', message: r.error };
 }
 
-async function rawRequest(method, relativePath, { params, data, endpointKey, safetyMethod, tokenKind = 'sysuser', _retryPageToken = false } = {}) {
-  const ep = endpointKey || `${method}:${relativePath}`;
-  const pre = safety.preflight(ep, safetyMethod || method);
+async function request(method, path, { params, data, endpoint, kind = 'READ', tokenKind = 'sysuser', retried = false } = {}) {
+  const ep = endpoint || `${method}:${path}`;
+  const pre = safety.preflight(ep, kind);
   if (!pre.ok) {
-    log.warn('fb.preflight.blocked', { endpoint: ep, error: pre.error, message: pre.message });
+    log.warn('fb.blocked', { endpoint: ep, error: pre.error });
     return { ok: false, blocked: true, ...pre };
   }
-  await throttle(lastUsageHint);
-  safety.recordCall();
-  callCounter += 1;
+  const tok = await resolveToken(tokenKind);
+  if (!tok.ok) return { ok: false, error: tok.error, message: tok.message };
 
-  const tokRes = await resolveToken(tokenKind);
-  if (!tokRes.ok) {
-    log.error('fb.token.unavailable', { endpoint: ep, tokenKind, detail: tokRes.detail });
-    return { ok: false, error: tokRes.error, detail: tokRes.detail };
-  }
-  const token = tokRes.token;
-  const ap = appSecretProof(token);
-
-  const reqConfig = {
-    method,
-    url: relativePath.startsWith('/') ? relativePath : `/${relativePath}`,
-  };
+  const auth = { access_token: tok.token, appsecret_proof: appSecretProof(tok.token) };
+  const req = { method, url: path.startsWith('/') ? path : `/${path}` };
   if (method === 'GET' || method === 'DELETE') {
-    reqConfig.params = { access_token: token, appsecret_proof: ap, ...(params || {}) };
-    if (data && typeof data === 'object') {
-      for (const [k, v] of Object.entries(data)) {
-        if (v === undefined || v === null) continue;
-        reqConfig.params[k] = typeof v === 'string' ? v : JSON.stringify(v);
-      }
-    }
+    req.params = { ...auth, ...(params || {}) };
   } else {
-    const body = new URLSearchParams();
-    body.append('access_token', token);
-    body.append('appsecret_proof', ap);
+    const body = new URLSearchParams(auth);
     for (const [k, v] of Object.entries(data || {})) {
-      if (v === undefined || v === null) continue;
-      body.append(k, typeof v === 'string' ? v : JSON.stringify(v));
+      if (v !== undefined && v !== null) body.append(k, typeof v === 'string' ? v : JSON.stringify(v));
     }
-    reqConfig.data = body.toString();
-    reqConfig.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    req.data = body.toString();
+    req.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
   }
 
-  let response;
+  let res;
   let elapsedMs = 0;
-  let attempt = 0;
-  for (;;) {
+  for (let attempt = 0; ; attempt += 1) {
+    await throttleSlot();
+    safety.recordCall();
+    callCounter += 1;
     const t0 = Date.now();
     try {
-      response = await http.request(reqConfig);
+      res = await http.request(req);
     } catch (err) {
-      log.error('fb.transport_error', { endpoint: ep, error: String(err.message || err), attempt });
-      safety.recordError(ep, { message: String(err.message || err) });
-      return { ok: false, transportError: true, error: String(err.message || err) };
+      const message = String(err.message || err);
+      log.error('fb.transport_error', { endpoint: ep, error: message });
+      safety.recordError(ep, { message });
+      return { ok: false, transportError: true, error: 'transport_error', message };
     }
     elapsedMs = Date.now() - t0;
-
-    const st = response.status;
-    const b = response.data;
-    const emptyBody = b == null || (typeof b === 'string' && b.trim() === '');
-    const metaEnvelope = b && typeof b === 'object' && b.error;
-    const proxyReject = (st < 200 || st >= 300) && emptyBody && !metaEnvelope && elapsedMs < PROXY_REJECT_MAX_MS;
-    if (proxyReject && attempt < PROXY_REJECT_MAX_RETRIES) {
-      attempt += 1;
-      const backoffMs = 300 * attempt + Math.floor(Math.random() * 150);
-      log.warn('fb.proxy_retry', { endpoint: ep, status: st, elapsedMs, attempt, backoffMs });
-      safety.recordCall();
-      await new Promise((r) => setTimeout(r, backoffMs));
-      continue;
-    }
-    if (attempt > 0 && st >= 200 && st < 300) {
-      log.info('fb.proxy_retry.recovered', { endpoint: ep, attempt });
-    }
-    break;
+    const empty = res.data == null || (typeof res.data === 'string' && !res.data.trim());
+    const proxyReject = (res.status < 200 || res.status >= 300) && empty && elapsedMs < PROXY_REJECT_MAX_MS;
+    if (!proxyReject || attempt >= PROXY_REJECT_MAX_RETRIES) break;
+    log.warn('fb.proxy_retry', { endpoint: ep, status: res.status, elapsedMs, attempt: attempt + 1 });
   }
 
-  const { sample, bucInfo, appMaxPct } = captureUsage(method, ep, response);
-  lastUsageHint = {
-    appMaxPct,
-    bucMaxPct: bucInfo.pct,
-    insightsMaxPct: Math.max(Number(sample.insightsAppPct || 0), Number(sample.insightsAccPct || 0)),
-  };
+  const usage = readUsage(res.headers);
+  usagePct = usage.pct;
+  const body = res.data;
 
-  const body = response.data;
-  const isError = body && typeof body === 'object' && body.error;
-  if (isError) {
+  if (body && typeof body === 'object' && body.error) {
     const e = body.error;
-    if (tokenKind === 'page' && Number(e.code) === 190 && !_retryPageToken) {
-      pageToken.invalidate(`error_190_on_${ep}`);
-      log.warn('fb.page_token.retry_after_invalidate', { endpoint: ep });
-      return rawRequest(method, relativePath, {
-        params, data, endpointKey, safetyMethod, tokenKind, _retryPageToken: true,
-      });
+    if (tokenKind === 'page' && Number(e.code) === 190 && !retried) {
+      pageToken.invalidate(`190 on ${ep}`);
+      return request(method, path, { params, data, endpoint, kind, tokenKind, retried: true });
     }
-    safety.recordError(ep, {
-      code: e.code,
-      subcode: e.error_subcode,
-      httpStatus: response.status,
-      estimatedTimeToRegainAccess: bucInfo.etr,
-      message: e.message,
-    });
-    log.error('fb.api_error', {
-      endpoint: ep,
-      http: response.status,
-      code: e.code,
-      subcode: e.error_subcode,
-      message: (e.message || '').slice(0, 160),
-      elapsedMs,
-      tokenKind,
-    });
-    return { ok: false, apiError: true, error: e, httpStatus: response.status, body };
+    safety.recordError(ep, { code: e.code, subcode: e.error_subcode, httpStatus: res.status, etaMinutes: usage.eta, message: e.message });
+    log.error('fb.api_error', { endpoint: ep, http: res.status, code: e.code, subcode: e.error_subcode, message: (e.message || '').slice(0, 160), elapsedMs });
+    return { ok: false, apiError: true, error: e, message: e.message, httpStatus: res.status };
   }
-  if (response.status < 200 || response.status >= 300) {
-    let rawBody = '';
-    if (typeof body === 'string') rawBody = body;
-    else if (body != null) { try { rawBody = JSON.stringify(body); } catch { rawBody = String(body); } }
-    const snippet = rawBody.slice(0, 300);
-    // A non-2xx with an EMPTY body that returns FAST (sub-~100ms) is the signature of a rejection at
-    // the PROXY / egress layer, NOT Meta: a real Graph call round-trips in ~600-5000ms through the
-    // proxy, and Meta's own errors always return a JSON {error:{...}} envelope (handled above as
-    // fb.api_error). An empty body + tiny elapsedMs = the proxy refused the request before it ever
-    // reached Meta (transient egress-IP refusal / source not authorised), which is intermittent and
-    // usually succeeds on retry. Capture the hop-identifying headers so we can tell proxy vs Meta.
-    const hdrs = response.headers || {};
-    const viaHdr = hdrs.via || hdrs.Via || null;
-    const srvHdr = hdrs.server || hdrs.Server || null;
-    const fastEmpty = !snippet && elapsedMs < 100;
-    const message = snippet
-      ? `Graph HTTP ${response.status}: ${snippet}`
-      : fastEmpty
-        ? `HTTP ${response.status} with an empty body in ${elapsedMs}ms — rejected at the PROXY/egress layer before reaching Meta (a real Graph call round-trips in ~600ms+ and Meta errors carry a JSON body). Likely a transient proxy/egress-IP refusal; usually succeeds on retry. Not a rate limit, permission, or account issue.`
-        : `HTTP ${response.status} with an empty body in ${elapsedMs}ms (no Graph error envelope). Edge/proxy rejection rather than a Graph business error.`;
-    safety.recordError(ep, { httpStatus: response.status, message: `HTTP ${response.status}` });
-    log.error('fb.http_error', { endpoint: ep, status: response.status, elapsedMs, bodySnippet: snippet || '(empty)', via: viaHdr, server: srvHdr });
-    return { ok: false, httpStatus: response.status, status: response.status, body, error: { httpStatus: response.status, message }, message };
+  if (res.status < 200 || res.status >= 300) {
+    const message = `HTTP ${res.status} with no Graph error body (${elapsedMs}ms) — proxy/edge rejection.`;
+    safety.recordError(ep, { httpStatus: res.status, message });
+    log.error('fb.http_error', { endpoint: ep, status: res.status, elapsedMs });
+    return { ok: false, httpStatus: res.status, error: 'http_error', message };
   }
 
   safety.recordSuccess(ep);
-  log.info('fb.api', {
-    endpoint: ep,
-    method,
-    http: response.status,
-    elapsedMs,
-    callNo: callCounter,
-    appPct: appMaxPct.toFixed(1),
-    bucPct: bucInfo.pct.toFixed(1),
-    insightsPct: Math.max(sample.insightsAppPct || 0, sample.insightsAccPct || 0).toFixed(1),
-    tier: sample.adsApiAccessTier,
-  });
-  return { ok: true, body, httpStatus: response.status, sample, elapsedMs };
+  log.info('fb.api', { endpoint: ep, http: res.status, elapsedMs, callNo: callCounter, usagePct: usage.pct });
+  return { ok: true, body, elapsedMs };
 }
 
 export const fb = {
-  async get(path, params, endpointKey, opts = {}) {
-    return rawRequest('GET', path, { params, endpointKey, tokenKind: opts.tokenKind });
+  get(path, params, endpoint, { tokenKind } = {}) {
+    return request('GET', path, { params, endpoint, kind: 'READ', tokenKind });
   },
 
-  async moderate(method, path, data, endpointKey) {
-    return rawRequest(method, path, { data, endpointKey, safetyMethod: 'MODERATE', tokenKind: 'page' });
+  // Writes always use the Page token and are gated by FB_ALLOW_COMMENT_MODERATION.
+  write(method, path, data, endpoint) {
+    return request(method, path, { data, params: method === 'DELETE' ? data : undefined, endpoint, kind: 'WRITE', tokenKind: 'page' });
   },
 
-  async pagePost(path, data, endpointKey) {
-    return rawRequest('POST', path, { data, endpointKey, safetyMethod: 'POST_PAGE', tokenKind: 'page' });
-  },
-
-  async pageDelete(path, params, endpointKey) {
-    return rawRequest('DELETE', path, { params, endpointKey, safetyMethod: 'POST_PAGE', tokenKind: 'page' });
-  },
-
-  async manage(method, path, data, endpointKey) {
-    return rawRequest(method, path, { data, endpointKey, safetyMethod: 'MANAGE', tokenKind: 'sysuser' });
-  },
-
-  async batch(ops, endpointKey = 'POST:/batch', opts = {}) {
-    if (!ops || ops.length === 0) return { ok: true, body: [], parsed: {} };
-    if (ops.length > 50) {
-      const a = await this.batch(ops.slice(0, 50), endpointKey, opts);
-      const b = await this.batch(ops.slice(50), endpointKey, opts);
-      if (!a.ok) return a;
-      if (!b.ok) return b;
-      return { ok: true, body: [...(a.body || []), ...(b.body || [])], parsed: { ...(a.parsed || {}), ...(b.parsed || {}) } };
-    }
-    const payload = {
-      include_headers: 'true',
-      batch: ops.map((o) => ({ method: o.method, relative_url: o.relative_url.replace(/^\/+/, ''), name: o.name })),
-    };
-    const subMethods = new Set(ops.map((o) => (o.method || 'GET').toUpperCase()));
-    const allReads = subMethods.size === 1 && subMethods.has('GET');
-    log.info('fb.batch.start', { count: ops.length, names: ops.map((o) => o.name), allReads, tokenKind: opts.tokenKind || 'sysuser' });
-    const t0 = Date.now();
-    const res = await rawRequest('POST', '/', {
-      data: payload,
-      endpointKey,
-      safetyMethod: allReads ? 'POST_BATCH' : 'POST',
-      tokenKind: opts.tokenKind,
-    });
-    const elapsedMs = Date.now() - t0;
-    if (!res.ok) {
-      log.error('fb.batch.outer_error', { elapsedMs });
-      return res;
-    }
-    const items = Array.isArray(res.body) ? res.body : [];
+  // Read-only batch (GET sub-ops only). Returns parsed[name] = { ok, code, body }.
+  async batch(ops, endpoint, { tokenKind } = {}) {
+    if (!ops.length) return { ok: true, parsed: {} };
+    if (ops.some((o) => (o.method || 'GET') !== 'GET')) throw new Error('fb.batch is read-only');
     const parsed = {};
-    let ok = 0;
-    let fail = 0;
-    for (let i = 0; i < ops.length; i += 1) {
-      const o = ops[i];
-      const item = items[i];
-      if (!item) {
-        parsed[o.name] = { ok: false, missing: true };
-        fail += 1;
-        continue;
-      }
-      const code = Number(item.code || 0);
-      let body;
-      try {
-        body = typeof item.body === 'string' ? JSON.parse(item.body) : item.body;
-      } catch {
-        body = { _raw: typeof item.body === 'string' ? item.body.slice(0, 300) : null };
-      }
-      if (Array.isArray(item.headers) && item.headers.length) {
-        const headersObj = {};
-        for (const h of item.headers) {
-          if (h?.name) headersObj[h.name.toLowerCase()] = h.value;
-        }
-        try {
-          captureUsage('GET', `batch.sub:${o.name}`, { status: code, headers: headersObj });
-        } catch (err) {
-          log.warn('fb.batch.subheader_capture_failed', { name: o.name, error: String(err) });
-        }
-      }
-      const isOk = code >= 200 && code < 300 && body && !body.error;
-      parsed[o.name] = { ok: isOk, code, body };
-      if (isOk) ok += 1;
-      else fail += 1;
+    for (let i = 0; i < ops.length; i += 50) {
+      const chunk = ops.slice(i, i + 50);
+      const res = await request('POST', '/', {
+        data: { batch: chunk.map((o) => ({ method: 'GET', relative_url: o.relative_url.replace(/^\/+/, ''), name: o.name })) },
+        endpoint, kind: 'READ', tokenKind,
+      });
+      if (!res.ok) return res;
+      const items = Array.isArray(res.body) ? res.body : [];
+      chunk.forEach((o, j) => {
+        const item = items[j];
+        if (!item) { parsed[o.name] = { ok: false, code: 0, body: null }; return; }
+        let body = null;
+        try { body = typeof item.body === 'string' ? JSON.parse(item.body) : item.body; } catch { body = null; }
+        const code = Number(item.code || 0);
+        parsed[o.name] = { ok: code >= 200 && code < 300 && body && !body.error, code, body };
+      });
     }
-    log.info('fb.batch.done', { count: ops.length, ok, fail, elapsedMs });
-    return { ok: true, parsed, body: items, elapsedMs };
-  },
-
-  async getAll(path, params, endpointKey, maxPages = 20, opts = {}) {
-    const items = [];
-    let res = await this.get(path, params, endpointKey, opts);
-    if (!res.ok) return res;
-    for (let i = 0; i < maxPages; i += 1) {
-      if (!res.ok || !res.body) break;
-      const data = res.body.data;
-      if (Array.isArray(data)) items.push(...data);
-      const next = res.body?.paging?.next;
-      if (!next) break;
-      const u = new URL(next);
-      const nextParams = Object.fromEntries(u.searchParams.entries());
-      res = await this.get(`${u.pathname.replace(/^\/+(v[0-9.]+\/)?/, '/')}`.replace(/^\//, ''), nextParams, endpointKey, opts);
-    }
-    return { ok: true, body: { data: items } };
+    return { ok: true, parsed };
   },
 
   meta() {
     return {
-      proxy: config.proxyUrl ? `${config.proxyHost}:${config.proxyPort}` : 'none (direct)',
-      version: config.graphVersion,
-      tokenMasked: maskToken(config.systemToken),
-      readonly: config.readonly,
-      primaryAccountId: config.primaryAccountId,
-      timezone: config.primaryAccountTz,
+      proxy: config.proxyUrl ? `${config.proxyHost}:${config.proxyPort}` : null,
+      graphVersion: config.graphVersion,
+      token: maskToken(config.systemToken),
+      pageId: config.targetPageId,
     };
   },
 };

@@ -1,960 +1,470 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GFM Greece — Ads Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="/js/tailwind-config.js"></script>
-    <script src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
-    <link rel="stylesheet" href="/css/app.css" />
-  </head>
-  <body class="bg-meta-gray-50 text-meta-gray-900 font-sans antialiased">
-    <div x-data="dashboard()" x-init="init()" x-cloak class="min-h-screen flex flex-col pb-16 md:pb-0">
-      <!-- TOP NAV -->
-      <header class="bg-white border-b border-gray-200 sticky top-0 z-30">
-        <div class="px-6 py-3 flex items-center flex-wrap gap-2 md:gap-4">
-          <div class="flex items-center gap-3">
-            <div class="w-9 h-9 rounded-lg bg-meta-blue text-white flex items-center justify-center font-bold text-lg">G</div>
-            <div>
-              <div class="text-sm font-semibold leading-tight">GFM Greece</div>
-              <div class="text-xs text-meta-gray-600 font-mono" x-text="meta.primaryAccountId || '—'"></div>
-            </div>
-          </div>
-          <div class="hidden md:flex items-center gap-2 text-xs text-meta-gray-600 ml-2">
-            <span x-text="account?.currency || 'USD'"></span>
-            <span>·</span>
-            <span x-text="account?.timezone_name || meta.timezone || ''"></span>
-          </div>
-          <div class="flex-1 min-w-0"></div>
-          <div class="flex items-center flex-wrap justify-end gap-1.5 md:gap-2">
-            <button @click="openStrategy()"
-                    title="Open the Strategy advisor — analyzes your last 30/90 days (learning-phase health, best days/hours/placements, creative fatigue, scaling readiness) and proposes a ranked, suggest-only action plan plus an AI weekly summary. It never changes anything."
-                    class="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-md hover:bg-indigo-700 hidden md:flex items-center gap-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-              Strategy
-            </button>
-            <button @click="$dispatch('open-posts-manager', {})"
-                    title="Open the Page Posts Manager — generate medical/advocacy posts with OpenRouter AI, publish to RiseHope feed, and manage published posts."
-                    class="px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-md hover:bg-emerald-700 hidden md:flex items-center gap-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"/></svg>
-              Page Posts
-            </button>
-            <button @click="$dispatch('open-comments-manager', {})"
-                    title="Open the full Comments manager — sync posts, AI-review, reply, hide, delete or block commenters across all your ad posts."
-                    class="px-3 py-1.5 bg-meta-blue text-white text-xs font-semibold rounded-md hover:bg-blue-700 hidden md:flex items-center gap-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-              Comments Manager
-            </button>
-            <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border cursor-help"
-                 :class="safety.killSwitch ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'"
-                 :title="safety.killSwitch ? 'Kill switch engaged — every Meta API call is halted until released.' : 'Healthy. All systems operating normally; Meta calls are flowing.'">
-              <span class="w-1.5 h-1.5 rounded-full pulse-dot" :class="safety.killSwitch ? 'bg-red-500' : 'bg-green-500'"></span>
-              <span x-text="safety.killSwitch ? 'KILL SWITCH' : 'OK'"></span>
-            </div>
-            <div class="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 cursor-help"
-                 x-show="safety.readonly"
-                 title="Generic Meta writes are blocked by FB_READONLY. Pause/resume + budget edits (ad management) and comment hide/delete (moderation) are gated separately and may still be enabled — see the green 'Managing live' chip.">READ-ONLY</div>
-            <button @click="rateLimitOpen = !rateLimitOpen"
-                    title="Daily Meta API call budget — resets at account-timezone midnight. Click to open rate-limit details."
-                    class="px-2.5 py-1 rounded-full text-xs font-medium border"
-                    :class="dailyPct < 50 ? 'bg-gray-50 text-meta-gray-600 border-gray-200 hover:bg-gray-100' : dailyPct < 80 ? 'bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-100' : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'">
-              <span class="text-num" x-text="safety.dailyCallsUsed"></span>
-              <span class="text-meta-gray-600">/</span>
-              <span class="text-num" x-text="safety.dailyCallCap"></span>
-              <span class="text-meta-gray-600 ml-1">calls</span>
-              <span class="ml-1.5">▾</span>
-            </button>
-            <div class="px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200"
-                 x-show="safety.cooldowns?.length > 0">
-              <span x-text="safety.cooldowns.length"></span> cooldown<span x-show="safety.cooldowns.length > 1">s</span>
-            </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Comment Auto-Moderation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/js/tailwind-config.js"></script>
+  <script src="/app.js"></script>
+  <script src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .tab { padding: .7rem .25rem; border-bottom: 2px solid transparent; font-weight: 600; font-size: .875rem; color: #64748b; white-space: nowrap; }
+    .tab:hover { color: #0f172a; }
+    .tab.on { color: #1877F2; border-color: #1877F2; }
+    .btn { display: inline-flex; align-items: center; gap: .375rem; border-radius: .5rem; padding: .4rem .75rem; font-size: .8125rem; font-weight: 600; transition: background .15s, opacity .15s; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-primary { background: #1877F2; color: #fff; } .btn-primary:hover:not(:disabled) { background: #1464d8; }
+    .btn-ghost { color: #334155; background: #fff; box-shadow: inset 0 0 0 1px #e2e8f0; } .btn-ghost:hover:not(:disabled) { background: #f8fafc; }
+    .btn-danger { color: #b91c1c; background: #fff; box-shadow: inset 0 0 0 1px #fecaca; } .btn-danger:hover:not(:disabled) { background: #fef2f2; }
+    .chip-btn { border-radius: .375rem; padding: .25rem .5rem; font-size: .75rem; font-weight: 600; color: #475569; } .chip-btn:hover:not(:disabled) { background: #f1f5f9; color: #0f172a; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: .75rem; }
+    .switch { position: relative; width: 2.5rem; height: 1.4rem; border-radius: 999px; background: #cbd5e1; transition: background .15s; flex-shrink: 0; }
+    .switch::after { content: ''; position: absolute; top: .2rem; left: .2rem; width: 1rem; height: 1rem; border-radius: 999px; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+    .switch.on { background: #1877F2; } .switch.on::after { transform: translateX(1.1rem); }
+    .switch.warn.on { background: #d97706; } .switch.danger.on { background: #dc2626; }
+    .field { border: 1px solid #cbd5e1; border-radius: .5rem; padding: .4rem .6rem; font-size: .8125rem; background: #fff; }
+    .field:focus { outline: 2px solid #1877F2; outline-offset: -1px; border-color: transparent; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans antialiased">
+<div x-data="app()" x-init="init()" x-cloak class="min-h-screen">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
+    <div class="max-w-6xl mx-auto px-4">
+      <div class="flex items-center gap-3 py-3">
+        <div class="w-9 h-9 rounded-lg bg-meta-blue text-white grid place-items-center shrink-0">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/></svg>
+        </div>
+        <div class="min-w-0">
+          <div class="text-sm font-bold leading-tight">Comment Auto-Moderation</div>
+          <div class="flex items-center gap-1.5 text-xs" :class="status.tone">
+            <span class="w-2 h-2 rounded-full" :class="status.dot"></span>
+            <span class="font-semibold" x-text="status.label"></span>
+            <template x-if="nextRunLabel && !state?.scheduler?.running && !state?.safety?.killSwitch">
+              <span class="text-slate-500">· next run in <span class="tabular-nums" x-text="nextRunLabel"></span></span>
+            </template>
           </div>
         </div>
-      </header>
-
-      <!-- MOBILE BOTTOM NAV (phones only) — primary actions live here so the header stays compact -->
-      <nav class="mobile-bottom-nav md:hidden" aria-label="Primary">
-        <button type="button" @click="window.scrollTo({ top: 0, behavior: 'smooth' })" class="mbn-item">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
-          <span>Dashboard</span>
+        <div class="flex-1"></div>
+        <button class="btn btn-primary" @click="runNow()" :disabled="!state || state.scheduler.running || state.safety.killSwitch"
+                title="Fetch new comments on tracked posts, review them and apply your policy now">
+          <svg x-show="state?.scheduler?.running" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          <svg x-show="!state?.scheduler?.running" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+          <span x-text="state?.scheduler?.running ? 'Running…' : 'Run now'"></span>
         </button>
-        <button type="button" @click="refreshAllNow()" :disabled="loading || safety.killSwitch" class="mbn-item">
-          <svg class="w-5 h-5" :class="loading ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-          <span x-text="loading ? 'Refreshing' : 'Refresh'"></span>
-        </button>
-        <button type="button" @click="openStrategy()" class="mbn-item mbn-accent">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          <span>Strategy</span>
-        </button>
-        <button type="button" @click="$dispatch('open-comments-manager', {})" class="mbn-item">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-          <span>Comments</span>
-        </button>
+      </div>
+      <nav class="flex gap-6 -mb-px overflow-x-auto">
+        <button class="tab" :class="tab==='comments' && 'on'" @click="go('comments')">Comments
+          <span x-show="counts.flagged" class="ml-1 rounded-full bg-red-100 text-red-700 px-1.5 text-[11px]" x-text="counts.flagged"></span></button>
+        <button class="tab" :class="tab==='posts' && 'on'" @click="go('posts')">Posts
+          <span class="ml-1 text-slate-400 font-medium" x-text="state ? state.trackedPosts + ' tracked' : ''"></span></button>
+        <button class="tab" :class="tab==='activity' && 'on'" @click="go('activity')">Activity</button>
+        <button class="tab" :class="tab==='settings' && 'on'" @click="go('settings')">Settings</button>
       </nav>
-
-      <!-- Cooldown banner -->
-      <div x-show="safety.cooldowns?.length > 0" x-transition class="bg-yellow-50 border-b border-yellow-200">
-        <div class="px-6 py-2 text-xs text-yellow-900 flex items-center gap-2">
-          <svg class="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495a1.75 1.75 0 013.03 0l6.28 10.875a1.75 1.75 0 01-1.515 2.63H3.72a1.75 1.75 0 01-1.515-2.63L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
-          <span class="font-semibold">Circuit breaker active:</span>
-          <template x-for="cd in safety.cooldowns" :key="cd.endpoint">
-            <span class="font-mono mr-3"><span x-text="cd.endpoint"></span> until <span x-text="cd.cooldown_until"></span></span>
-          </template>
-        </div>
-      </div>
-
-      <!-- Rate Limit Details panel -->
-      <div x-show="rateLimitOpen" x-transition class="bg-white border-b border-gray-200">
-        <div class="px-6 py-4">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-sm font-bold">Rate Limit Details</h2>
-            <div class="flex items-center gap-3 text-xs text-meta-gray-600">
-              <span x-show="rateLimitDetails?.capturedAt">Captured: <span x-text="timeAgo(rateLimitDetails?.capturedAt)"></span></span>
-              <a :href="rateLimitDetails?.devDashboardUrl" target="_blank" class="text-meta-blue hover:underline">Open Meta dev dashboard ↗</a>
-              <button @click="rateLimitOpen = false" class="text-meta-gray-600 hover:text-meta-gray-900">✕</button>
-            </div>
-          </div>
-          <div x-show="!rateLimitDetails?.hasData" class="text-sm text-meta-gray-600 italic">No API calls captured yet. Click Refresh.</div>
-          <div x-show="rateLimitDetails?.hasData" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <!-- App-level -->
-            <div class="border border-gray-200 rounded-lg p-3">
-              <div class="text-xs font-semibold text-meta-gray-900 mb-2">App-level (X-App-Usage)</div>
-              <template x-if="rateLimitDetails?.app">
-                <div>
-                  <template x-for="metric in [
-                    { key: 'callCountPct', label: 'Call count' },
-                    { key: 'totalCpuTimePct', label: 'Total CPU time' },
-                    { key: 'totalTimePct', label: 'Total time' }
-                  ]" :key="metric.key">
-                    <div class="mb-2">
-                      <div class="flex justify-between text-xs mb-0.5">
-                        <span x-text="metric.label"></span>
-                        <span class="text-num font-medium" x-text="(rateLimitDetails?.app?.[metric.key] ?? 0) + '%'"></span>
-                      </div>
-                      <div class="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                        <div class="h-full rounded-full transition-all"
-                             :style="`width: ${rateLimitDetails?.app?.[metric.key] ?? 0}%`"
-                             :class="(rateLimitDetails?.app?.[metric.key] ?? 0) < 50 ? 'bg-green-500' : (rateLimitDetails?.app?.[metric.key] ?? 0) < 80 ? 'bg-yellow-500' : 'bg-red-500'"></div>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-              <template x-if="!rateLimitDetails?.app">
-                <div class="text-xs text-meta-gray-600">
-                  Marketing API calls don't return <code class="font-mono text-[10px]">X-App-Usage</code>.
-                  Use the per-account BUC panel instead — those are the real limits enforced for ad operations.
-                </div>
-              </template>
-            </div>
-            <!-- Per-account BUC -->
-            <div class="border border-gray-200 rounded-lg p-3 lg:col-span-2">
-              <div class="text-xs font-semibold text-meta-gray-900 mb-2">Per-account BUC (X-Business-Use-Case-Usage)</div>
-              <template x-for="acc in rateLimitDetails?.accounts || []" :key="acc.accountId + acc.type">
-                <div class="mb-3 last:mb-0">
-                  <div class="flex items-center justify-between text-xs mb-1">
-                    <div>
-                      <span class="font-mono" x-text="acc.accountId"></span>
-                      <span class="ml-2 px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-[10px] font-medium uppercase" x-text="acc.type"></span>
-                    </div>
-                    <span x-show="acc.estimatedTimeToRegainAccess > 0" class="text-red-700 font-medium">
-                      ETR: <span x-text="acc.estimatedTimeToRegainAccess + 'min'"></span>
-                    </span>
-                  </div>
-                  <div class="grid grid-cols-3 gap-2 text-xs">
-                    <template x-for="metric in [
-                      { key: 'callCountPct', label: 'Calls' },
-                      { key: 'totalCpuTimePct', label: 'CPU' },
-                      { key: 'totalTimePct', label: 'Time' }
-                    ]" :key="metric.key">
-                      <div>
-                        <div class="flex justify-between mb-0.5">
-                          <span x-text="metric.label"></span>
-                          <span class="text-num font-medium" x-text="(acc[metric.key] ?? 0) + '%'"></span>
-                        </div>
-                        <div class="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div class="h-full rounded-full transition-all"
-                               :style="`width: ${acc[metric.key] ?? 0}%`"
-                               :class="(acc[metric.key] ?? 0) < 50 ? 'bg-green-500' : (acc[metric.key] ?? 0) < 80 ? 'bg-yellow-500' : 'bg-red-500'"></div>
-                        </div>
-                      </div>
-                    </template>
-                  </div>
-                </div>
-              </template>
-              <div x-show="!rateLimitDetails?.accounts?.length" class="text-xs text-meta-gray-600 italic">No BUC data yet. Click Refresh.</div>
-            </div>
-          </div>
-          <div x-show="rateLimitDetails?.insightsThrottle" class="mt-3 border border-gray-200 rounded-lg p-3">
-            <div class="text-xs font-semibold text-meta-gray-900 mb-2">Insights throttle (X-FB-Ads-Insights-Throttle)</div>
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-              <div>
-                <div class="flex justify-between mb-0.5"><span>App util %</span><span class="text-num font-medium" x-text="(rateLimitDetails?.insightsThrottle?.appUtilPct ?? 0) + '%'"></span></div>
-                <div class="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                  <div class="h-full rounded-full transition-all"
-                       :style="`width: ${rateLimitDetails?.insightsThrottle?.appUtilPct ?? 0}%`"
-                       :class="(rateLimitDetails?.insightsThrottle?.appUtilPct ?? 0) < 50 ? 'bg-green-500' : (rateLimitDetails?.insightsThrottle?.appUtilPct ?? 0) < 80 ? 'bg-yellow-500' : 'bg-red-500'"></div>
-                </div>
-              </div>
-              <div>
-                <div class="flex justify-between mb-0.5"><span>Account util %</span><span class="text-num font-medium" x-text="(rateLimitDetails?.insightsThrottle?.accountUtilPct ?? 0) + '%'"></span></div>
-                <div class="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                  <div class="h-full rounded-full transition-all"
-                       :style="`width: ${rateLimitDetails?.insightsThrottle?.accountUtilPct ?? 0}%`"
-                       :class="(rateLimitDetails?.insightsThrottle?.accountUtilPct ?? 0) < 50 ? 'bg-green-500' : (rateLimitDetails?.insightsThrottle?.accountUtilPct ?? 0) < 80 ? 'bg-yellow-500' : 'bg-red-500'"></div>
-                </div>
-              </div>
-              <div>
-                <div class="text-xs text-meta-gray-600 mb-0.5">Marketing API tier</div>
-                <div class="font-semibold" x-text="rateLimitDetails?.insightsThrottle?.tier || '—'"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Level tabs + breadcrumb -->
-      <div class="bg-white border-b border-gray-200">
-        <div class="px-6 flex items-end gap-1">
-          <button @click="setLevel('campaign', null, null)" class="level-tab" :class="level === 'campaign' ? 'active' : ''"
-                  title="Top level. Campaigns hold your objective and (for CBO) the budget.">
-            Campaigns<span class="ml-1 text-meta-gray-600 font-normal" x-show="level === 'campaign'" x-text="'(' + rows.length + ')'"></span>
-          </button>
-          <button @click="setLevel('adset', parentCampaignId, null)" class="level-tab" :class="level === 'adset' ? 'active' : ''"
-                  title="Ad sets hold targeting, schedule, placements and (for ABO) the budget. Drill in from a campaign to scope to it.">
-            Ad Sets<span class="ml-1 text-meta-gray-600 font-normal" x-show="level === 'adset'" x-text="'(' + rows.length + ')'"></span>
-          </button>
-          <button @click="setLevel('ad', parentCampaignId, parentAdsetId)" class="level-tab" :class="level === 'ad' ? 'active' : ''"
-                  title="Ads are the individual creatives. Each ad links to a post you can manage in the Comments tab.">
-            Ads<span class="ml-1 text-meta-gray-600 font-normal" x-show="level === 'ad'" x-text="'(' + rows.length + ')'"></span>
-          </button>
-          <div class="flex-1"></div>
-          <div class="py-1.5 text-xs text-meta-gray-600 flex items-center gap-1" x-show="parentCampaignId || parentAdsetId">
-            <span class="drill-link" @click="setLevel('campaign', null, null)">All campaigns</span>
-            <template x-if="parentCampaignId">
-              <span class="flex items-center gap-1">
-                <span>›</span>
-                <span class="drill-link" @click="setLevel('adset', parentCampaignId, null)" x-text="breadcrumb?.campaignName || parentCampaignId"></span>
-              </span>
-            </template>
-            <template x-if="parentAdsetId">
-              <span class="flex items-center gap-1">
-                <span>›</span>
-                <span class="drill-link" @click="setLevel('ad', parentCampaignId, parentAdsetId)" x-text="breadcrumb?.adsetName || parentAdsetId"></span>
-              </span>
-            </template>
-          </div>
-        </div>
-      </div>
-
-      <!-- Toolbar -->
-      <div class="bg-white border-b border-gray-200">
-        <div class="px-6 py-3 flex items-center gap-3 flex-wrap toolbar-row">
-          <h1 class="text-lg font-bold mr-1" x-text="levelTitle"></h1>
-          <span class="px-2 py-0.5 rounded text-[11px] font-medium border inline-flex items-center gap-1 mr-1 cursor-help"
-                :class="canManage ? 'bg-green-50 text-green-700 border-green-200' : 'bg-gray-50 text-meta-gray-600 border-gray-200'"
-                :title="manageHint">
-            <span class="w-1.5 h-1.5 rounded-full" :class="canManage ? 'bg-green-500' : 'bg-gray-400'"></span>
-            <span x-text="canManage ? 'Managing live' : 'View-only'"></span>
-          </span>
-          <div class="flex items-center gap-1 bg-gray-100 rounded-md p-0.5">
-            <button @click="setFilterMode('all')" :class="filterMode === 'all' ? 'bg-white shadow-sm' : ''" class="px-3 py-1 text-xs font-medium rounded" title="Show every row regardless of status or delivery.">All</button>
-            <button @click="setFilterMode('active')" :class="filterMode === 'active' ? 'bg-white shadow-sm' : ''" class="px-3 py-1 text-xs font-medium rounded" title="Show only rows whose status is Active.">Active</button>
-            <button @click="setFilterMode('delivered')" :class="filterMode === 'delivered' ? 'bg-white shadow-sm' : ''" class="px-3 py-1 text-xs font-medium rounded" title="Show only rows that had impressions in the selected date range.">Had delivery</button>
-          </div>
-          <div class="relative hidden md:block">
-            <button @click="presetsOpen = !presetsOpen; columnsOpen=false" title="Switch between saved column layouts (presets) or save your own." class="px-3 py-1.5 text-xs font-medium border border-gray-300 bg-white rounded-md hover:bg-gray-50 flex items-center gap-1">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5h14a2 2 0 012 2v2a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zm0 8h14a2 2 0 012 2v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2a2 2 0 012-2z"/></svg>
-              <span x-text="activePresetLabel"></span>
-              <span class="ml-1">▾</span>
-            </button>
-            <div x-show="presetsOpen" @click.outside="presetsOpen = false" x-transition
-                 class="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-40 overflow-hidden">
-              <div class="p-2 border-b border-gray-100 text-xs font-semibold text-meta-gray-600 uppercase tracking-wider">Built-in</div>
-              <template x-for="p in builtInPresets" :key="p.id">
-                <div class="flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 cursor-pointer" @click="applyPreset(p.id); presetsOpen=false">
-                  <span class="text-sm" x-text="p.name"></span>
-                  <span x-show="activePresetId === p.id" class="text-meta-blue text-xs">✓</span>
-                </div>
-              </template>
-              <template x-if="customPresets.length">
-                <div>
-                  <div class="p-2 border-b border-t border-gray-100 text-xs font-semibold text-meta-gray-600 uppercase tracking-wider">Custom</div>
-                  <template x-for="p in customPresets" :key="p.id">
-                    <div class="flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 group">
-                      <span class="text-sm cursor-pointer flex-1" @click="applyPreset(p.id); presetsOpen=false" x-text="p.name"></span>
-                      <span x-show="activePresetId === p.id" class="text-meta-blue text-xs mr-2">✓</span>
-                      <button @click.stop="deletePreset(p.id)" class="text-xs text-red-600 opacity-0 group-hover:opacity-100 hover:underline">Delete</button>
-                    </div>
-                  </template>
-                </div>
-              </template>
-              <div class="border-t border-gray-100 p-2">
-                <button @click="saveCurrentAsPreset()" class="w-full text-left px-2 py-1.5 text-xs text-meta-blue hover:bg-blue-50 rounded font-medium">+ Save current columns as preset…</button>
-              </div>
-            </div>
-          </div>
-          <div class="relative hidden md:block">
-            <button @click="columnsOpen = !columnsOpen; presetsOpen=false" title="Choose which metric columns are visible in the table." class="px-3 py-1.5 text-xs font-medium border border-gray-300 bg-white rounded-md hover:bg-gray-50 flex items-center gap-1">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
-              Columns
-              <span class="text-meta-gray-600">(<span x-text="visibleColumnCount"></span>)</span>
-            </button>
-            <!-- Column picker dropdown -->
-            <div x-show="columnsOpen" @click.outside="columnsOpen = false" x-transition
-                 class="absolute top-full left-0 mt-1 w-80 bg-white border border-gray-200 rounded-lg shadow-xl z-40 max-h-[70vh] overflow-y-auto scrollbar-thin">
-              <div class="p-3 border-b border-gray-200 flex items-center justify-between">
-                <div class="text-xs font-semibold">Columns visible in the table</div>
-                <div class="flex gap-2 text-xs">
-                  <button @click="resetColumnsToDefault()" class="text-meta-blue hover:underline">Reset</button>
-                  <button @click="toggleAllColumns(true)" class="text-meta-blue hover:underline">All</button>
-                  <button @click="toggleAllColumns(false)" class="text-meta-blue hover:underline">None</button>
-                </div>
-              </div>
-              <template x-for="group in columnGroups" :key="group.id">
-                <div class="px-3 py-2 border-b border-gray-100 last:border-b-0">
-                  <div class="flex items-center justify-between mb-1.5">
-                    <div class="text-xs font-semibold text-meta-gray-900" x-text="group.label"></div>
-                    <button @click="toggleGroup(group.id)" class="text-[10px] text-meta-blue hover:underline" x-text="isGroupAllOn(group.id) ? 'Hide all' : 'Show all'"></button>
-                  </div>
-                  <template x-for="col in group.columns" :key="col.id">
-                    <label class="flex items-center gap-2 py-1 cursor-pointer hover:bg-gray-50 px-1 rounded">
-                      <input type="checkbox" :checked="visibleColumns[col.id] !== false" @change="toggleColumn(col.id)" class="rounded text-meta-blue">
-                      <span class="text-xs" x-text="col.label"></span>
-                      <span class="text-[10px] text-meta-gray-600 ml-auto font-mono" x-text="col.subtle || ''"></span>
-                    </label>
-                  </template>
-                </div>
-              </template>
-            </div>
-          </div>
-          <div class="flex-1"></div>
-          <div class="flex items-center gap-2">
-            <label class="text-xs text-meta-gray-600">Date:</label>
-            <select x-model="datePreset" @change="onDatePresetChange()" title="Date range for all metrics. Changing this reloads cached numbers; click Refresh to pull fresh data from Meta for this range." class="text-sm border border-gray-300 rounded-md px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-meta-blue focus:border-meta-blue">
-              <option value="today">Today</option>
-              <option value="yesterday">Yesterday</option>
-              <option value="last_7d">Last 7 days</option>
-              <option value="last_14d">Last 14 days</option>
-              <option value="last_28d">Last 28 days</option>
-              <option value="last_30d">Last 30 days</option>
-              <option value="this_month">This month</option>
-              <option value="last_month">Last month</option>
-              <option value="maximum">Lifetime</option>
-            </select>
-          </div>
-          <!-- MOBILE: Filters & columns trigger + bottom sheet (phones only) -->
-          <div class="md:hidden" x-data="{ fopen: false }">
-            <button type="button" @click="fopen = true" class="m-filter-trigger" aria-label="Open filters and columns">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.879a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
-              <span>Filters</span>
-              <span class="m-filter-badge" x-text="visibleColumnCount"></span>
-            </button>
-
-            <div x-show="fopen" x-transition.opacity class="m-sheet-backdrop" @click="fopen = false" x-cloak></div>
-            <div x-show="fopen" x-cloak
-                 x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-y-full" x-transition:enter-end="translate-y-0"
-                 x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-y-0" x-transition:leave-end="translate-y-full"
-                 class="m-sheet">
-              <div class="m-sheet-grip"></div>
-              <div class="m-sheet-head">
-                <div class="m-sheet-title">Filters &amp; columns</div>
-                <button type="button" @click="fopen = false" class="text-meta-blue font-semibold text-sm px-2 py-1">Done</button>
-              </div>
-              <div class="m-sheet-body">
-                <!-- Date range -->
-                <div class="m-sheet-section-label">Date range</div>
-                <div class="grid grid-cols-3 gap-2">
-                  <template x-for="d in [
-                      {v:'today',l:'Today'},{v:'yesterday',l:'Yesterday'},{v:'last_7d',l:'7 days'},
-                      {v:'last_14d',l:'14 days'},{v:'last_28d',l:'28 days'},{v:'last_30d',l:'30 days'},
-                      {v:'this_month',l:'This month'},{v:'last_month',l:'Last month'},{v:'maximum',l:'Lifetime'}
-                    ]" :key="d.v">
-                    <button type="button" @click="datePreset = d.v; onDatePresetChange()"
-                            class="px-2 py-2.5 rounded-lg text-[13px] font-medium border"
-                            :class="datePreset === d.v ? 'bg-meta-blue text-white border-meta-blue' : 'bg-white text-meta-gray-700 border-gray-300'"
-                            x-text="d.l"></button>
-                  </template>
-                </div>
-
-                <!-- Presets -->
-                <div class="m-sheet-section-label">Saved layouts</div>
-                <div class="space-y-1">
-                  <template x-for="p in builtInPresets" :key="'mp-'+p.id">
-                    <button type="button" @click="applyPreset(p.id)" class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg border"
-                            :class="activePresetId === p.id ? 'border-meta-blue bg-blue-50' : 'border-gray-200 bg-white'">
-                      <span class="text-sm" x-text="p.name"></span>
-                      <span x-show="activePresetId === p.id" class="text-meta-blue">✓</span>
-                    </button>
-                  </template>
-                  <template x-for="p in customPresets" :key="'mpc-'+p.id">
-                    <div class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg border"
-                         :class="activePresetId === p.id ? 'border-meta-blue bg-blue-50' : 'border-gray-200 bg-white'">
-                      <button type="button" class="flex-1 text-left text-sm" @click="applyPreset(p.id)" x-text="p.name"></button>
-                      <button type="button" @click.stop="deletePreset(p.id)" class="text-xs text-red-600 ml-2">Delete</button>
-                    </div>
-                  </template>
-                  <button type="button" @click="saveCurrentAsPreset()" class="w-full text-left px-3 py-2.5 text-sm text-meta-blue font-medium">+ Save current columns as preset…</button>
-                </div>
-
-                <!-- Refresh + auto -->
-                <div class="m-sheet-section-label">Data</div>
-                <div class="flex items-center gap-2">
-                  <button type="button" @click="refreshLevelNow(); fopen=false" :disabled="loading || safety.killSwitch"
-                          class="flex-1 px-3 py-3 rounded-lg border border-gray-300 bg-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                    <span x-text="'Refresh ' + levelNounPlural"></span>
-                  </button>
-                  <label class="flex items-center gap-2 px-3 py-3 rounded-lg border border-gray-300 bg-white text-sm font-medium">
-                    <input type="checkbox" x-model="autoRefreshOn" @change="saveAutoRefresh()" class="rounded text-meta-blue w-4 h-4">
-                    Auto
-                  </label>
-                </div>
-
-                <!-- Columns -->
-                <div class="flex items-center justify-between mt-5 mb-2">
-                  <div class="m-sheet-section-label" style="margin:0;">Columns (<span x-text="visibleColumnCount"></span>)</div>
-                  <div class="flex gap-3 text-xs">
-                    <button type="button" @click="resetColumnsToDefault()" class="text-meta-blue font-medium">Reset</button>
-                    <button type="button" @click="toggleAllColumns(true)" class="text-meta-blue font-medium">All</button>
-                    <button type="button" @click="toggleAllColumns(false)" class="text-meta-blue font-medium">None</button>
-                  </div>
-                </div>
-                <template x-for="group in columnGroups" :key="'mg-'+group.id">
-                  <div class="mb-3">
-                    <div class="flex items-center justify-between mb-1">
-                      <div class="text-xs font-bold text-meta-gray-900" x-text="group.label"></div>
-                      <button type="button" @click="toggleGroup(group.id)" class="text-[11px] text-meta-blue font-medium" x-text="isGroupAllOn(group.id) ? 'Hide all' : 'Show all'"></button>
-                    </div>
-                    <div class="grid grid-cols-1 gap-0.5">
-                      <template x-for="col in group.columns" :key="'mgc-'+col.id">
-                        <label class="flex items-center gap-2.5 py-2 px-1 rounded-lg active:bg-gray-50">
-                          <input type="checkbox" :checked="visibleColumns[col.id] !== false" @change="toggleColumn(col.id)" class="rounded text-meta-blue w-4 h-4">
-                          <span class="text-sm" x-text="col.label"></span>
-                          <span class="text-[11px] text-meta-gray-500 ml-auto font-mono" x-text="col.subtle || ''"></span>
-                        </label>
-                      </template>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </div>
-          </div>
-
-          <div class="text-xs hidden md:block" :class="stalenessClass">
-            <template x-if="lastInsightsFetchedAt">
-              <span>Insights: <span class="font-medium" x-text="timeAgo(lastInsightsFetchedAt)"></span></span>
-            </template>
-            <template x-if="!lastInsightsFetchedAt">
-              <span class="italic">No data yet</span>
-            </template>
-          </div>
-          <label class="hidden md:flex items-center gap-1 text-xs text-meta-gray-600 cursor-help"
-                 title="Auto-refresh: when on, the current view is re-fetched roughly every 2 minutes if data is older than 10 minutes. Pauses automatically near rate limits or when the kill switch is on.">
-            <input type="checkbox" x-model="autoRefreshOn" @change="saveAutoRefresh()" class="rounded text-meta-blue">
-            Auto
-          </label>
-          <button @click="refreshLevelNow()" :disabled="loading || safety.killSwitch"
-                  class="hidden md:flex px-3 py-1.5 bg-white border border-gray-300 text-meta-gray-900 text-xs font-medium rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed items-center gap-1.5"
-                  :title="'Refresh ' + levelNounPlural + ' only (1 HTTP)'">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            <span x-text="loading && loadingScope === 'level' ? '…' : 'Level'"></span>
-          </button>
-          <button @click="refreshAllNow()" :disabled="loading || safety.killSwitch"
-                  class="hidden md:flex px-4 py-1.5 bg-meta-blue text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed items-center gap-2"
-                  title="Refresh campaigns + ad sets + ads (3 HTTP)">
-            <svg x-show="!loading" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            <svg x-show="loading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-            <span x-text="loading && loadingScope === 'all' ? 'Refreshing all…' : 'Refresh all'"></span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Staleness banner -->
-      <div x-show="stalenessLevel === 'stale' || stalenessLevel === 'old'" x-transition class="border-b"
-           :class="stalenessLevel === 'old' ? 'bg-red-50 border-red-200' : 'bg-yellow-50 border-yellow-200'">
-        <div class="px-6 py-2 text-xs flex items-center gap-2"
-             :class="stalenessLevel === 'old' ? 'text-red-900' : 'text-yellow-900'">
-          <svg class="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495a1.75 1.75 0 013.03 0l6.28 10.875a1.75 1.75 0 01-1.515 2.63H3.72a1.75 1.75 0 01-1.515-2.63L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
-          <span class="font-semibold" x-text="stalenessLevel === 'old' ? 'Data is stale.' : 'Data may be stale.'"></span>
-          <span>Insights for this view last refreshed <span class="font-medium" x-text="timeAgo(lastInsightsFetchedAt)"></span><span x-show="rowsWithoutInsights > 0"> · <span x-text="rowsWithoutInsights"></span> row<span x-show="rowsWithoutInsights > 1">s</span> never refreshed</span>.</span>
-          <button @click="refreshAllNow()" :disabled="loading" class="ml-auto px-2 py-0.5 rounded font-medium bg-white border border-current hover:bg-gray-50">Refresh all now</button>
-        </div>
-      </div>
-
-      <!-- Toast -->
-      <div x-show="toast.show" x-transition class="fixed top-16 md:top-20 left-3 right-3 md:left-auto md:right-6 z-50 md:max-w-md">
-        <div class="rounded-lg shadow-lg border p-4 text-sm flex items-start gap-3"
-             :class="toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-900' : toast.type === 'warn' ? 'bg-yellow-50 border-yellow-200 text-yellow-900' : 'bg-blue-50 border-blue-200 text-blue-900'">
-          <div class="flex-1">
-            <div class="font-semibold" x-text="toast.title"></div>
-            <div class="mt-1 text-xs opacity-90" x-text="toast.message"></div>
-          </div>
-          <button @click="toast.show = false" class="text-xs opacity-60 hover:opacity-100">✕</button>
-        </div>
-      </div>
-
-      <!-- TABLE -->
-      <main class="flex-1 px-6 py-4">
-        <!-- DESKTOP / TABLET: dense data table (hidden on phones, replaced by the card list below) -->
-        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm hidden md:block">
-          <div class="overflow-x-auto scrollbar-thin">
-            <table class="w-full text-sm">
-              <thead class="bg-meta-gray-50 border-b border-gray-200">
-                <tr>
-                  <th class="px-3 py-2.5 text-left font-semibold text-meta-gray-600 text-xs uppercase tracking-wider w-12 sticky-col-toggle"
-                      title="Off/On switch. Click a row's toggle to pause or resume delivery on Meta (requires ad management to be enabled).">Off/On</th>
-                  <th @click="sortBy('name')" class="px-3 py-2.5 text-left font-semibold text-meta-gray-600 text-xs uppercase tracking-wider cursor-pointer hover:bg-gray-100 sticky-col" style="left: 60px; min-width: 220px;"
-                      :title="'Name + ID of each ' + levelNoun.toLowerCase() + '. Click a campaign or ad set name to drill into its children. Click to sort by name.'">
-                    <span x-text="levelNoun"></span> <span x-text="sortIcon('name')" class="text-meta-gray-600"></span>
-                  </th>
-                  <template x-for="col in visibleOrderedColumns" :key="col.id">
-                    <th @click="sortBy(col.field)" class="px-3 py-2.5 font-semibold text-meta-gray-600 text-xs uppercase tracking-wider cursor-help hover:bg-gray-100 whitespace-nowrap"
-                        :class="col.align === 'right' ? 'text-right' : 'text-left'"
-                        :title="(col.tip || col.label) + ' — click to sort.'">
-                      <span x-text="col.label"></span>
-                      <span x-text="sortIcon(col.field)"></span>
-                    </th>
-                  </template>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-100">
-                <template x-for="c in displayedRows" :key="c.id">
-                  <tr class="hover:bg-blue-50/30">
-                    <td class="px-3 py-2 sticky-col-toggle">
-                      <button type="button"
-                              @click="canManage ? toggleStatus(c) : toastError('Ad management is off', manageHint)"
-                              :disabled="isPending(c.id,'status')"
-                              :title="canManage ? ((c.status==='ACTIVE' ? 'Turn OFF (pause) ' : 'Turn ON (resume) ') + c.name + ' — sent to Meta immediately') : manageHint"
-                              class="w-9 h-5 rounded-full flex items-center px-0.5 transition-colors"
-                              :class="[ (c.status === 'ACTIVE' ? 'bg-meta-blue justify-end' : 'bg-gray-300 justify-start'), canManage ? 'cursor-pointer hover:ring-2 hover:ring-blue-300' : 'cursor-not-allowed opacity-70', isPending(c.id,'status') ? 'animate-pulse' : '' ]">
-                        <div class="w-4 h-4 rounded-full bg-white shadow-sm"></div>
-                      </button>
-                    </td>
-                    <td class="px-3 py-2 sticky-col" style="left: 60px; min-width: 220px;">
-                      <template x-if="nameEdit.id !== c.id">
-                        <div class="flex items-center gap-1 group/name">
-                          <div class="font-medium truncate max-w-xs"
-                               :class="canDrillDown ? 'drill-link' : ''"
-                               @click="canDrillDown ? drillInto(c) : null"
-                               :title="canDrillDown ? ('Click to drill into the ' + (level==='campaign'?'ad sets':'ads') + ' of: ' + c.name) : c.name"
-                               x-text="c.name"></div>
-                          <button x-show="canManage" @click.stop="openRename(c)" :disabled="isPending(c.id,'rename')"
-                                  title="Rename this entity. Renaming only changes the label on Meta — it does NOT affect delivery, budget or learning. Safe on live campaigns."
-                                  class="opacity-0 group-hover/name:opacity-100 transition-opacity text-meta-gray-600 hover:text-meta-blue flex-shrink-0"
-                                  :class="isPending(c.id,'rename') ? 'opacity-50' : ''">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                          </button>
-                        </div>
-                      </template>
-                      <template x-if="nameEdit.id === c.id">
-                        <div class="flex items-center gap-1" @click.stop>
-                          <input type="text" x-model="nameEdit.value" maxlength="400"
-                                 class="flex-1 min-w-0 border border-gray-300 rounded px-1.5 py-0.5 text-sm"
-                                 title="New name. Enter to save, Esc to cancel."
-                                 x-init="$nextTick(() => $el.focus())"
-                                 @keydown.enter="saveRename(c)" @keydown.escape="cancelRename()">
-                          <button @click="saveRename(c)" :disabled="isPending(c.id,'rename')" class="text-green-700 hover:underline text-[11px] font-medium flex-shrink-0" title="Save the new name to Meta">save</button>
-                          <button @click="cancelRename()" class="text-meta-gray-600 hover:underline text-[11px] flex-shrink-0" title="Discard">cancel</button>
-                        </div>
-                      </template>
-                      <div class="text-xs text-meta-gray-600 font-mono mt-0.5 truncate max-w-xs flex items-center gap-1">
-                        <span x-text="c.id"></span>
-                        <template x-if="level === 'adset' && c.campaign_name">
-                          <span class="ml-1 text-meta-gray-600">· <span x-text="c.campaign_name"></span></span>
-                        </template>
-                        <template x-if="level === 'ad' && c.adset_name">
-                          <span class="ml-1 text-meta-gray-600">· <span x-text="c.adset_name"></span></span>
-                        </template>
-                        <template x-if="rowStaleness(c) === 'old'">
-                          <span class="ml-2 px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[10px] font-medium uppercase cursor-help"
-                                title="This row's metrics are older than 30 minutes. Click Refresh to pull fresh numbers before making decisions.">stale</span>
-                        </template>
-                        <template x-if="rowStaleness(c) === 'stale'">
-                          <span class="ml-2 px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700 text-[10px] font-medium uppercase cursor-help"
-                                title="This row's metrics are 10–30 minutes old. Consider refreshing for up-to-date numbers.">old</span>
-                        </template>
-                        <template x-if="rowStaleness(c) === 'missing'">
-                          <span class="ml-2 px-1.5 py-0.5 rounded bg-gray-100 text-meta-gray-600 text-[10px] font-medium uppercase cursor-help"
-                                title="No insights have been fetched for this row in the selected date range yet. Click Refresh.">no data</span>
-                        </template>
-                      </div>
-                      <!-- Budget editor: ad sets (ABO budgets live here) + CBO campaigns that hold a campaign-level budget -->
-                      <template x-if="level === 'adset' || (level === 'campaign' && rowBudgetKind(c))">
-                        <div class="mt-1 text-[11px] flex items-center gap-1">
-                          <template x-if="budgetEdit.id !== c.id">
-                            <span class="inline-flex items-center gap-1">
-                              <span class="text-meta-gray-600">Budget:</span>
-                              <span class="font-medium" x-text="formatBudget(c) || 'not set'"
-                                    title="Budget on this level. CBO/Advantage+ campaigns hold the budget at campaign level; ABO holds it on each ad set."></span>
-                              <button x-show="canManage" @click.stop="openBudgetEdit(c)" :disabled="isPending(c.id,'budget')"
-                                      title="Edit this budget. The change is sent to Meta immediately and affects spend."
-                                      class="text-meta-blue hover:underline" :class="isPending(c.id,'budget') ? 'opacity-50' : ''">edit</button>
-                            </span>
-                          </template>
-                          <template x-if="budgetEdit.id === c.id">
-                            <span class="inline-flex items-center gap-1" @click.stop>
-                              <span x-text="account?.currency==='EUR'?'€':(account?.currency==='GBP'?'£':'$')"></span>
-                              <input type="number" min="0" step="0.01" x-model="budgetEdit.dollars"
-                                     class="w-20 border border-gray-300 rounded px-1 py-0.5 text-[11px]"
-                                     title="New budget amount in account currency."
-                                     @keydown.enter="saveBudget(c)" @keydown.escape="cancelBudgetEdit()">
-                              <select x-model="budgetEdit.kind" class="border border-gray-300 rounded px-1 py-0.5 text-[11px]"
-                                      title="Daily = spend cap per day. Total = lifetime budget over the whole schedule.">
-                                <option value="daily">/day</option>
-                                <option value="lifetime">total</option>
-                              </select>
-                              <button @click="saveBudget(c)" :disabled="isPending(c.id,'budget')" class="text-green-700 hover:underline font-medium" title="Save budget to Meta">save</button>
-                              <button @click="cancelBudgetEdit()" class="text-meta-gray-600 hover:underline" title="Discard changes">cancel</button>
-                            </span>
-                          </template>
-                        </div>
-                      </template>
-                      <!-- ABO campaign: no campaign-level budget — route to ad-set budgets instead of failing -->
-                      <template x-if="level === 'campaign' && !rowBudgetKind(c)">
-                        <div class="mt-1 text-[11px] flex items-center gap-1 text-meta-gray-600">
-                          <span>Budget:</span>
-                          <span class="font-medium cursor-help"
-                                title="This campaign uses ad-set budgets (ABO) — there is no campaign-level budget to edit. Open its ad sets to change each ad set's daily budget. Campaign-level budgets only apply to CBO / Advantage+ campaigns.">ad-set level (ABO)</span>
-                          <button @click.stop="drillInto(c)" class="text-meta-blue hover:underline"
-                                  title="Open this campaign's ad sets so you can edit each ad set's budget (where ABO budgets live).">edit on ad sets →</button>
-                        </div>
-                      </template>
-                      <div class="mt-1 flex items-center gap-2 flex-wrap">
-                        <button @click.stop="openTools(c)"
-                                title="Insights & tools: demographic/placement breakdowns, change history, and (for ads) a live creative preview. Read-only — never changes anything."
-                                class="text-[11px] text-meta-blue hover:underline inline-flex items-center gap-1">
-                          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-                          Insights
-                        </button>
-                        <template x-if="level === 'campaign' || level === 'adset'">
-                          <button @click.stop="duplicateRow(c)" :disabled="isPending(c.id,'duplicate')"
-                                  :title="canManage ? ('Create a full PAUSED copy of \'' + c.name + '\' (deep copy of its children). The original is never touched; the copy stays OFF until you turn it on. Ideal for scaling a winner.') : manageHint"
-                                  class="text-[11px] hover:underline inline-flex items-center gap-1"
-                                  :class="[canManage ? 'text-meta-blue' : 'text-meta-gray-400 cursor-not-allowed', isPending(c.id,'duplicate') ? 'opacity-50' : '']">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                            <span x-text="isPending(c.id,'duplicate') ? 'Duplicating…' : 'Duplicate'"></span>
-                          </button>
-                        </template>
-                        <template x-if="level === 'ad'">
-                          <button @click.stop="openComments(c)"
-                                  title="Open the Comments manager for this ad's post — review, reply, hide, delete or block."
-                                  class="text-[11px] text-meta-blue hover:underline inline-flex items-center gap-1">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-                            Comments
-                          </button>
-                        </template>
-                      </div>
-                    </td>
-                    <template x-for="col in visibleOrderedColumns" :key="col.id">
-                      <td class="px-3 py-2 text-num whitespace-nowrap"
-                          :class="col.align === 'right' ? 'text-right' : 'text-left'"
-                          x-html="renderCell(c, col)"></td>
-                    </template>
-                  </tr>
-                </template>
-                <tr x-show="rows.length === 0 && !loading">
-                  <td :colspan="visibleOrderedColumns.length + 2" class="px-6 py-12 text-center text-meta-gray-600">
-                    <div class="text-lg font-medium" x-text="'No ' + levelNounPlural + ' yet'"></div>
-                    <div class="mt-1 text-sm">Click <span class="font-semibold text-meta-blue">Refresh</span> to fetch the latest data from Meta.</div>
-                  </td>
-                </tr>
-              </tbody>
-              <tfoot class="bg-meta-gray-50 border-t-2 border-gray-300 font-semibold">
-                <tr>
-                  <td class="px-3 py-2.5 sticky-col-toggle"></td>
-                  <td class="px-3 py-2.5 sticky-col" style="left: 60px; min-width: 220px;">
-                    <div>Totals</div>
-                    <div class="text-xs text-meta-gray-600 font-normal" x-text="rows.length + ' ' + levelNounPlural + ' · ' + activeCount + ' active'"></div>
-                  </td>
-                  <template x-for="col in visibleOrderedColumns" :key="col.id">
-                    <td class="px-3 py-2.5 text-num whitespace-nowrap"
-                        :class="col.align === 'right' ? 'text-right' : 'text-left'"
-                        x-html="renderTotalCell(col)"></td>
-                  </template>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </div>
-
-        <!-- MOBILE: card list (phones only) — identical data, columns & handlers as the desktop table above -->
-        <section class="md:hidden" aria-label="Campaign list (mobile)">
-          <!-- count + sort bar -->
-          <div class="flex items-center justify-between gap-2 mb-1.5">
-            <div class="flex-shrink-0 text-[12px] leading-tight">
-              <span class="font-bold text-meta-gray-900" x-text="rows.length"></span>
-              <span class="text-meta-gray-500" x-text="' ' + levelNounPlural"></span>
-              <span class="text-green-700 font-medium" x-show="activeCount" x-text="' · ' + activeCount + ' on'"></span>
-            </div>
-          </div>
-          <div class="mb-2.5">
-            <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 py-0.5">
-              <span class="text-[11px] text-meta-gray-500 flex-shrink-0">Sort</span>
-              <button type="button" @click="sortBy('name')" class="msort-chip" :class="sortField==='name' ? 'msort-on' : ''">
-                Name <span x-text="sortIcon('name')"></span>
-              </button>
-              <button type="button" @click="sortBy('spend')" class="msort-chip" :class="sortField==='spend' ? 'msort-on' : ''">
-                Spend <span x-text="sortIcon('spend')"></span>
-              </button>
-              <button type="button" @click="sortBy('purchases_total')" class="msort-chip" :class="sortField==='purchases_total' ? 'msort-on' : ''">
-                Purch <span x-text="sortIcon('purchases_total')"></span>
-              </button>
-              <button type="button" @click="sortBy('purchase_roas_total')" class="msort-chip" :class="sortField==='purchase_roas_total' ? 'msort-on' : ''">
-                ROAS <span x-text="sortIcon('purchase_roas_total')"></span>
-              </button>
-              <button type="button" @click="sortBy('cpm')" class="msort-chip" :class="sortField==='cpm' ? 'msort-on' : ''">
-                CPM <span x-text="sortIcon('cpm')"></span>
-              </button>
-            </div>
-          </div>
-
-          <!-- totals strip -->
-          <div x-show="rows.length > 0" class="mtotals">
-            <div class="mtotals-label">Totals · <span x-text="rows.length + ' ' + levelNounPlural"></span></div>
-            <div class="mtotals-grid">
-              <template x-for="col in visibleOrderedColumns.filter(cc => cc.kind !== 'badge').slice(0, 4)" :key="'t-'+col.id">
-                <div class="mtotals-cell">
-                  <div class="mtotals-k" x-text="col.label"></div>
-                  <div class="mtotals-v" x-html="renderTotalCell(col)"></div>
-                </div>
-              </template>
-            </div>
-          </div>
-
-          <!-- loading skeleton -->
-          <template x-if="loading && rows.length === 0">
-            <div class="space-y-2.5">
-              <template x-for="i in 4" :key="'sk-'+i">
-                <div class="mrow-card animate-pulse">
-                  <div class="flex items-center gap-3">
-                    <div class="w-11 h-6 rounded-full bg-gray-200"></div>
-                    <div class="flex-1 space-y-1.5">
-                      <div class="h-3.5 bg-gray-200 rounded w-2/3"></div>
-                      <div class="h-2.5 bg-gray-100 rounded w-1/3"></div>
-                    </div>
-                  </div>
-                  <div class="grid grid-cols-2 gap-2 mt-3">
-                    <div class="h-8 bg-gray-100 rounded"></div>
-                    <div class="h-8 bg-gray-100 rounded"></div>
-                  </div>
-                </div>
-              </template>
-            </div>
-          </template>
-
-          <!-- cards -->
-          <div class="space-y-2.5">
-            <template x-for="c in displayedRows" :key="'m-'+c.id">
-              <article class="mrow-card" :class="c.status === 'ACTIVE' ? 'mrow-on' : 'mrow-off'">
-                <!-- header row: toggle + name + delivery -->
-                <div class="flex items-start gap-3">
-                  <button type="button"
-                          @click="canManage ? toggleStatus(c) : toastError('Ad management is off', manageHint)"
-                          :disabled="isPending(c.id,'status')"
-                          :aria-label="(c.status==='ACTIVE' ? 'Turn off ' : 'Turn on ') + c.name"
-                          :title="canManage ? ((c.status==='ACTIVE' ? 'Turn OFF (pause) ' : 'Turn ON (resume) ') + c.name + ' — sent to Meta immediately') : manageHint"
-                          class="mt-0.5 w-11 h-6 rounded-full flex items-center px-0.5 transition-colors flex-shrink-0"
-                          :class="[ (c.status === 'ACTIVE' ? 'bg-meta-blue justify-end' : 'bg-gray-300 justify-start'), canManage ? 'cursor-pointer' : 'cursor-not-allowed opacity-70', isPending(c.id,'status') ? 'animate-pulse' : '' ]">
-                    <div class="w-5 h-5 rounded-full bg-white shadow-sm"></div>
-                  </button>
-
-                  <div class="min-w-0 flex-1">
-                    <template x-if="nameEdit.id !== c.id">
-                      <div class="flex items-start gap-1.5">
-                        <div class="font-semibold text-[15px] leading-snug break-words flex-1"
-                             :class="canDrillDown ? 'drill-link' : ''"
-                             @click="canDrillDown ? drillInto(c) : null"
-                             x-text="c.name"></div>
-                        <button x-show="canManage" @click.stop="openRename(c)" :disabled="isPending(c.id,'rename')"
-                                aria-label="Rename" title="Rename (label only — does not affect delivery)"
-                                class="text-meta-gray-400 hover:text-meta-blue flex-shrink-0 p-1 -mr-1 -mt-1">
-                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                        </button>
-                      </div>
-                    </template>
-                    <template x-if="nameEdit.id === c.id">
-                      <div class="flex items-center gap-1.5" @click.stop>
-                        <input type="text" x-model="nameEdit.value" maxlength="400"
-                               class="flex-1 min-w-0 border border-gray-300 rounded px-2 py-1.5 text-[15px]"
-                               x-init="$nextTick(() => $el.focus())"
-                               @keydown.enter="saveRename(c)" @keydown.escape="cancelRename()">
-                        <button @click="saveRename(c)" :disabled="isPending(c.id,'rename')" class="text-green-700 font-semibold text-sm px-1">save</button>
-                        <button @click="cancelRename()" class="text-meta-gray-500 text-sm px-1">cancel</button>
-                      </div>
-                    </template>
-                    <div class="mt-1 flex items-center gap-1.5 flex-wrap text-[11px] text-meta-gray-500 font-mono">
-                      <span x-text="c.id"></span>
-                      <template x-if="level === 'adset' && c.campaign_name">
-                        <span class="truncate max-w-[160px]">· <span x-text="c.campaign_name"></span></span>
-                      </template>
-                      <template x-if="level === 'ad' && c.adset_name">
-                        <span class="truncate max-w-[160px]">· <span x-text="c.adset_name"></span></span>
-                      </template>
-                      <template x-if="rowStaleness(c) === 'old'">
-                        <span class="px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[10px] font-semibold uppercase">stale</span>
-                      </template>
-                      <template x-if="rowStaleness(c) === 'stale'">
-                        <span class="px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700 text-[10px] font-semibold uppercase">old</span>
-                      </template>
-                      <template x-if="rowStaleness(c) === 'missing'">
-                        <span class="px-1.5 py-0.5 rounded bg-gray-100 text-meta-gray-600 text-[10px] font-semibold uppercase">no data</span>
-                      </template>
-                    </div>
-                  </div>
-
-                  <div class="flex-shrink-0 text-right" x-html="deliveryBadge(c)"></div>
-                </div>
-
-                <!-- budget line -->
-                <template x-if="level === 'adset' || (level === 'campaign' && rowBudgetKind(c))">
-                  <div class="mt-2.5 flex items-center gap-1.5 text-[13px] bg-meta-gray-50 rounded-lg px-3 py-2">
-                    <template x-if="budgetEdit.id !== c.id">
-                      <span class="inline-flex items-center gap-1.5 flex-wrap">
-                        <span class="text-meta-gray-500">Budget</span>
-                        <span class="font-semibold" x-text="formatBudget(c) || 'not set'"></span>
-                        <button x-show="canManage" @click.stop="openBudgetEdit(c)" :disabled="isPending(c.id,'budget')"
-                                class="text-meta-blue font-medium px-1" :class="isPending(c.id,'budget') ? 'opacity-50' : ''">edit</button>
-                      </span>
-                    </template>
-                    <template x-if="budgetEdit.id === c.id">
-                      <span class="inline-flex items-center gap-1.5 flex-wrap" @click.stop>
-                        <span x-text="account?.currency==='EUR'?'€':(account?.currency==='GBP'?'£':'$')"></span>
-                        <input type="number" min="0" step="0.01" x-model="budgetEdit.dollars"
-                               class="w-24 border border-gray-300 rounded px-2 py-1 text-[14px]"
-                               @keydown.enter="saveBudget(c)" @keydown.escape="cancelBudgetEdit()">
-                        <select x-model="budgetEdit.kind" class="border border-gray-300 rounded px-1.5 py-1 text-[14px]">
-                          <option value="daily">/day</option>
-                          <option value="lifetime">total</option>
-                        </select>
-                        <button @click="saveBudget(c)" :disabled="isPending(c.id,'budget')" class="text-green-700 font-semibold px-1">save</button>
-                        <button @click="cancelBudgetEdit()" class="text-meta-gray-500 px-1">cancel</button>
-                      </span>
-                    </template>
-                  </div>
-                </template>
-                <template x-if="level === 'campaign' && !rowBudgetKind(c)">
-                  <div class="mt-2.5 flex items-center gap-1.5 flex-wrap text-[12px] bg-meta-gray-50 rounded-lg px-3 py-2 text-meta-gray-600">
-                    <span>Budget</span>
-                    <span class="font-medium">ad-set level (ABO)</span>
-                    <button @click.stop="drillInto(c)" class="text-meta-blue font-medium">edit on ad sets →</button>
-                  </div>
-                </template>
-
-                <!-- metrics grid -->
-                <div class="mt-2.5 grid grid-cols-3 gap-px bg-gray-100 rounded-lg overflow-hidden border border-gray-100">
-                  <template x-for="col in visibleOrderedColumns.filter(cc => cc.kind !== 'badge')" :key="'mc-'+c.id+'-'+col.id">
-                    <div class="bg-white px-2.5 py-2">
-                      <div class="mmetric-k" x-text="col.label" :title="col.tip || col.label"></div>
-                      <div class="mmetric-v" :class="col.align === 'right' ? 'tabular-nums' : ''" x-html="renderCell(c, col)"></div>
-                    </div>
-                  </template>
-                </div>
-
-                <!-- actions -->
-                <div class="mt-2.5 flex items-center gap-2 flex-wrap">
-                  <button @click.stop="openTools(c)" class="mrow-btn">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-                    Insights
-                  </button>
-                  <template x-if="canDrillDown">
-                    <button @click.stop="drillInto(c)" class="mrow-btn">
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                      <span x-text="level==='campaign' ? 'Ad sets' : 'Ads'"></span>
-                    </button>
-                  </template>
-                  <template x-if="level === 'campaign' || level === 'adset'">
-                    <button @click.stop="duplicateRow(c)" :disabled="isPending(c.id,'duplicate')"
-                            class="mrow-btn" :class="[canManage ? '' : 'opacity-50', isPending(c.id,'duplicate') ? 'opacity-50' : '']">
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                      <span x-text="isPending(c.id,'duplicate') ? 'Duplicating…' : 'Duplicate'"></span>
-                    </button>
-                  </template>
-                  <template x-if="level === 'ad'">
-                    <button @click.stop="openComments(c)" class="mrow-btn">
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.95 7.95 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-                      Comments
-                    </button>
-                  </template>
-                </div>
-              </article>
-            </template>
-          </div>
-
-          <!-- empty state -->
-          <div x-show="rows.length === 0 && !loading" class="text-center py-14 px-6 bg-white rounded-lg border border-gray-200">
-            <div class="text-lg font-semibold" x-text="'No ' + levelNounPlural + ' yet'"></div>
-            <div class="mt-1 text-sm text-meta-gray-600">Tap <span class="font-semibold text-meta-blue">Refresh</span> below to fetch the latest data from Meta.</div>
-          </div>
-        </section>
-
-        <!-- Recent samples -->
-        <details class="mt-6 bg-white rounded-lg border border-gray-200 shadow-sm">
-          <summary class="px-4 py-3 cursor-pointer font-semibold text-sm flex items-center gap-2">
-            <span>Recent API calls</span>
-            <span class="text-xs text-meta-gray-600 font-normal" x-text="'(' + (usageSamples?.length || 0) + ' samples)'"></span>
-          </summary>
-          <div class="border-t border-gray-200 px-4 py-3 max-h-96 overflow-y-auto scrollbar-thin">
-            <table class="w-full text-xs mtable">
-              <thead>
-                <tr class="text-meta-gray-600">
-                  <th class="text-left py-1">When</th>
-                  <th class="text-left py-1">Endpoint</th>
-                  <th class="text-right py-1">HTTP</th>
-                  <th class="text-right py-1">App%</th>
-                  <th class="text-right py-1">BUC%</th>
-                  <th class="text-right py-1">Ins app%</th>
-                  <th class="text-right py-1">Ins acc%</th>
-                  <th class="text-left py-1">Tier</th>
-                </tr>
-              </thead>
-              <tbody class="font-mono">
-                <template x-for="s in usageSamples?.slice(0, 50) || []" :key="s.id">
-                  <tr class="border-t border-gray-100">
-                    <td class="py-1 text-meta-gray-600" x-text="timeShort(s.ts)"></td>
-                    <td class="py-1 truncate max-w-md" x-text="s.where_path"></td>
-                    <td class="py-1 text-right" x-text="s.http_status"></td>
-                    <td class="py-1 text-right" x-text="formatPct(s.app_max_pct)"></td>
-                    <td class="py-1 text-right" x-text="formatPct(s.buc_max_pct)"></td>
-                    <td class="py-1 text-right" x-text="formatPct(s.insights_app_pct)"></td>
-                    <td class="py-1 text-right" x-text="formatPct(s.insights_acc_pct)"></td>
-                    <td class="py-1" x-text="s.ads_api_access_tier || '—'"></td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-            <div x-show="!usageSamples?.length" class="text-meta-gray-600 italic">No samples yet. Click Refresh to make API calls.</div>
-          </div>
-        </details>
-      </main>
-
-      <!-- ============================ INSIGHTS & TOOLS DRAWER ============================ -->
-      <!--#include file="partials/tools-drawer.html" -->
-      <!--#include file="partials/strategy-drawer.html" -->
-
-      <footer class="px-6 py-4 text-xs text-meta-gray-600 border-t border-gray-200 bg-white">
-        <span>fb-ads-manager · GFM Greece · single-account · read-only</span>
-        <span class="mx-2">·</span>
-        <span>Graph API <span x-text="meta.version"></span></span>
-        <span class="mx-2">·</span>
-        <span>via proxy <span class="font-mono" x-text="safety.proxy"></span></span>
-      </footer>
-
     </div>
+  </header>
 
-    <!-- ============================ COMMENTS MANAGER ============================ -->
-    <!--#include file="partials/comments-manager.html" -->
+  <main class="max-w-6xl mx-auto px-4 py-5 pb-24">
+    <!-- Warnings -->
+    <template x-for="w in warnings" :key="w">
+      <div class="mb-3 flex gap-2 items-start text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+        <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"/></svg>
+        <span x-text="w"></span>
+      </div>
+    </template>
 
-    <!-- ============================ PAGE POSTS MANAGER ============================ -->
-    <!--#include file="partials/posts-drawer.html" -->
+    <!-- ============ COMMENTS ============ -->
+    <section x-show="tab==='comments'" class="grid md:grid-cols-[210px_1fr] gap-5">
+      <aside class="min-w-0">
+        <div class="flex md:flex-col gap-1 overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0 pb-1 md:pb-0">
+        <template x-for="f in filters" :key="f.key">
+          <button @click="setFilter(f.key)" :title="f.hint"
+                  class="shrink-0 md:w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm whitespace-nowrap"
+                  :class="filter===f.key ? 'bg-blue-50 text-meta-blue font-semibold' : 'text-slate-600 hover:bg-white'">
+            <span x-text="f.label"></span>
+            <span class="text-xs tabular-nums" :class="f.key==='flagged' && counts.flagged ? 'text-red-600 font-bold' : 'text-slate-400'" x-text="counts[f.key] ?? ''"></span>
+          </button>
+        </template>
+        </div>
+        <div class="pt-3 grid grid-cols-2 md:grid-cols-1 gap-2">
+          <select class="field w-full" x-model="postFilter" @change="loadComments()">
+            <option value="">All tracked posts</option>
+            <template x-for="p in trackedPosts" :key="p.id">
+              <option :value="p.id" x-text="clip(p.campaign_names || p.message || p.id, 40)"></option>
+            </template>
+          </select>
+          <input class="field w-full" placeholder="Search text or name…" x-model="q" @keydown.enter="loadComments()" @input.debounce.400ms="loadComments()" />
+        </div>
+      </aside>
 
-    <script src="/js/dashboard-config.js"></script>
-    <script src="/app.js"></script>
-    <script src="/comments-app.js"></script>
-    <script src="/posts-app.js"></script>
-  </body>
+      <div class="min-w-0">
+        <!-- Bulk bar -->
+        <div class="flex items-center gap-2 mb-3 flex-wrap">
+          <label class="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+            <input type="checkbox" class="rounded" :checked="rows.length && selected.length===rows.length" @change="selectAll()" />
+            <span x-text="selected.length ? selected.length + ' selected' : 'Select all'"></span>
+          </label>
+          <template x-if="selected.length && !bulkProgress">
+            <div class="flex gap-1.5">
+              <button class="btn btn-ghost" @click="bulk('hide')">Hide</button>
+              <button class="btn btn-ghost" @click="bulk('unhide')">Unhide</button>
+              <button class="btn btn-danger" @click="bulk('delete')">Delete</button>
+            </div>
+          </template>
+          <template x-if="bulkProgress">
+            <div class="flex items-center gap-2 text-xs font-semibold text-slate-700">
+              <svg class="w-4 h-4 animate-spin text-meta-blue" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+              <span x-text="`${bulkProgress.verb} ${bulkProgress.done}/${bulkProgress.total}…`"></span>
+              <div class="w-24 h-1.5 rounded-full bg-slate-200 overflow-hidden"><div class="h-full bg-meta-blue transition-all" :style="`width:${Math.round(bulkProgress.done / bulkProgress.total * 100)}%`"></div></div>
+            </div>
+          </template>
+          <div class="flex-1"></div>
+          <span class="text-xs text-slate-500" x-text="total ? `${offset+1}–${Math.min(offset+limit,total)} of ${total}` : ''"></span>
+          <button class="chip-btn" @click="page(-1)" :disabled="offset===0">‹ Prev</button>
+          <button class="chip-btn" @click="page(1)" :disabled="offset+limit>=total">Next ›</button>
+        </div>
+
+        <div x-show="loadingComments && !rows.length" class="text-sm text-slate-500 py-10 text-center">Loading…</div>
+        <div x-show="!loadingComments && !rows.length" class="card p-10 text-center">
+          <div class="text-sm font-semibold text-slate-700" x-text="filter==='flagged' ? 'Nothing needs attention' : 'No comments here'"></div>
+          <div class="text-xs text-slate-500 mt-1" x-text="state?.trackedPosts ? 'New comments show up after the next run.' : 'Track some posts first.'"></div>
+        </div>
+
+        <div class="space-y-2.5">
+          <template x-for="r in rows" :key="r.id">
+            <article class="card p-3.5 transition-all duration-300"
+                     :class="[r.deleted ? 'opacity-60' : '', r._leaving ? 'opacity-0 -translate-x-4 scale-[.98]' : '', busyIds[r.id] ? 'ring-2 ring-blue-200' : '']">
+              <div class="flex gap-3">
+                <input type="checkbox" class="mt-1 rounded" :checked="selected.includes(r.id)" @change="toggleSelect(r.id)" :disabled="r.deleted" />
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 flex-wrap text-xs">
+                    <span class="font-semibold text-slate-800" x-text="r.is_page_author ? 'Your Page' : (r.from_name || 'Facebook user')"></span>
+                    <span class="text-slate-400" x-text="ago(r.created_time)" :title="when(r.created_time)"></span>
+                    <span class="rounded px-1.5 py-0.5 font-semibold" :class="cat(r.category).cls" x-text="cat(r.category).label"></span>
+                    <span x-show="r.severity != null" class="font-semibold" :class="sevClass(r.severity)" x-text="'severity ' + r.severity"></span>
+                    <span x-show="r.is_hidden && !r.deleted" class="rounded px-1.5 py-0.5 bg-slate-100 text-slate-600 font-semibold">Hidden</span>
+                    <span x-show="r.deleted" class="rounded px-1.5 py-0.5 bg-slate-100 text-slate-600 font-semibold" x-text="r.deleted_by==='automod' ? 'Deleted by automation' : r.deleted_by==='external' ? 'Removed on Facebook' : 'Deleted'"></span>
+                    <template x-if="autoStatus(r.automod_status) && !(r.automod_status==='deleted' && r.deleted)">
+                      <span class="rounded px-1.5 py-0.5 ring-1 font-semibold" :class="autoStatus(r.automod_status).cls" x-text="autoStatus(r.automod_status).label"></span>
+                    </template>
+                    <span x-show="r.my_reply_id" class="rounded px-1.5 py-0.5 bg-blue-50 text-meta-blue font-semibold">Replied</span>
+                  </div>
+
+                  <div x-show="r.parent_message" class="mt-1.5 text-xs text-slate-500 border-l-2 border-slate-200 pl-2">
+                    ↳ reply to <span class="font-medium" x-text="r.parent_from_name || 'a comment'"></span>: <span x-text="clip(r.parent_message, 120)"></span>
+                  </div>
+                  <p class="mt-1.5 text-sm whitespace-pre-wrap break-words" x-text="r.message || '(no text — sticker or image)'"></p>
+                  <p x-show="showTranslation(r)" class="mt-1 text-sm text-slate-500 italic break-words" x-text="'EN: ' + r.english_translation"></p>
+                  <p x-show="r.action_reason && r.category && r.category!=='safe'" class="mt-1 text-xs text-slate-500" x-text="'AI: ' + r.action_reason"></p>
+
+                  <div class="mt-2 flex items-center gap-1 flex-wrap text-xs text-slate-400">
+                    <span class="truncate max-w-[18rem]" x-text="'on ' + clip(r.campaign_names || r.post_message || 'post', 60)"></span>
+                    <a x-show="r.permalink_url" :href="r.permalink_url" target="_blank" rel="noopener" class="chip-btn !text-slate-400 hover:!text-meta-blue">Open ↗</a>
+                    <div class="flex-1"></div>
+                    <template x-if="!r.deleted && !r.is_page_author">
+                      <div class="flex gap-0.5">
+                        <button class="chip-btn" @click="openReply(r)">Reply</button>
+                        <button class="chip-btn" @click="act(r, r.user_likes ? 'unlike' : 'like')" x-text="r.user_likes ? 'Unlike' : 'Like'"></button>
+                        <button class="chip-btn" @click="act(r, r.is_hidden ? 'unhide' : 'hide')" :disabled="busyIds[r.id]" x-text="r.is_hidden ? 'Unhide' : 'Hide'"></button>
+                        <button class="chip-btn" x-show="r.from_id" @click="act(r, 'block')" :disabled="busyIds[r.id]">Block</button>
+                        <button class="chip-btn !text-red-600 hover:!bg-red-50" @click="act(r, 'delete')" :disabled="busyIds[r.id]">Delete</button>
+                      </div>
+                    </template>
+                  </div>
+
+                  <div x-show="replyOpen===r.id" x-transition class="mt-2 space-y-2">
+                    <textarea class="field w-full" rows="2" x-model="replyText" placeholder="Write a reply as your Page…"></textarea>
+                    <div class="flex gap-2">
+                      <button class="btn btn-primary" @click="sendReply(r)" :disabled="replyBusy || !replyText.trim()">Post reply</button>
+                      <button class="btn btn-ghost" @click="draftReply(r)" :disabled="replyBusy || !state?.analyzerEnabled" x-text="replyBusy ? 'Working…' : 'AI draft'"></button>
+                      <button class="btn btn-ghost" @click="replyOpen=null">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ POSTS ============ -->
+    <section x-show="tab==='posts'">
+      <div class="card p-4 mb-4">
+        <div class="flex flex-col md:flex-row gap-3 md:items-center">
+          <div class="flex-1">
+            <div class="text-sm font-bold">Choose which posts to watch</div>
+            <div class="text-xs text-slate-500 mt-0.5">Tracked posts are checked on every run. Comments posted before you start tracking are left alone unless you review them.</div>
+          </div>
+          <button class="btn btn-ghost" @click="discover()" :disabled="discovering" title="Reads your ads and the Page's posts from Facebook (2–3 API calls)">
+            <svg class="w-4 h-4" :class="discovering && 'animate-spin'" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+            <span x-text="discovering ? 'Loading posts…' : 'Refresh list from Facebook'"></span>
+          </button>
+        </div>
+        <form class="mt-3 flex gap-2" @submit.prevent="addPost()">
+          <input class="field flex-1" x-model="addInput" placeholder="Or paste a post link / ID to add and track it" />
+          <button class="btn btn-primary" :disabled="addBusy || !addInput.trim()" x-text="addBusy ? 'Adding…' : 'Add'"></button>
+        </form>
+      </div>
+
+      <div class="flex items-center gap-2 mb-3 flex-wrap">
+        <template x-for="v in [['all','All'],['tracked','Tracked'],['ad','Ad posts'],['page','Page posts']]" :key="v[0]">
+          <button class="rounded-full px-3 py-1 text-xs font-semibold" :class="postView===v[0] ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100'"
+                  @click="postView=v[0]" x-text="v[1]"></button>
+        </template>
+        <input class="field ml-auto w-56" x-model="postQuery" placeholder="Filter posts…" />
+      </div>
+
+      <div x-show="!posts.length" class="card p-10 text-center">
+        <div class="text-sm font-semibold text-slate-700">No posts loaded yet</div>
+        <div class="text-xs text-slate-500 mt-1">Click “Refresh list from Facebook” or paste a post link above.</div>
+      </div>
+
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <template x-for="p in visiblePosts" :key="p.id">
+          <div class="card overflow-hidden flex flex-col transition" :class="trackedDraft[p.id] ? 'ring-2 ring-meta-blue border-transparent' : ''">
+            <button type="button" class="text-left flex-1 flex flex-col" @click="toggleDraft(p.id)">
+              <div class="h-32 bg-slate-100 relative">
+                <img x-show="p.picture_url" :src="p.picture_url" class="w-full h-full object-cover" loading="lazy" alt="" />
+                <span class="absolute top-2 left-2 rounded px-1.5 py-0.5 text-[11px] font-semibold bg-white/90"
+                      x-text="p.source==='ad' ? (p.ad_status==='ACTIVE' ? 'Ad · active' : p.ad_status==='ENDED' ? 'Ad · ended' : 'Ad · paused') : p.source==='manual' ? 'Added manually' : 'Page post'"></span>
+                <span class="absolute top-2 right-2 w-6 h-6 rounded-md grid place-items-center text-white text-sm font-bold"
+                      :class="trackedDraft[p.id] ? 'bg-meta-blue' : 'bg-white/90 ring-1 ring-slate-300 text-transparent'">✓</span>
+              </div>
+              <div class="p-3 flex-1">
+                <div x-show="p.campaign_names" class="text-xs font-semibold text-meta-blue truncate" x-text="p.campaign_names"></div>
+                <p class="text-sm text-slate-700 mt-0.5 line-clamp-3" x-text="p.message || '(no text)'"></p>
+              </div>
+            </button>
+            <div class="px-3 pb-3 flex items-center gap-2 text-xs text-slate-500">
+              <span x-text="(p.comment_count || 0) + ' comments'"></span>
+              <span x-show="p.automod_deleted" class="text-red-600" x-text="'· ' + p.automod_deleted + ' auto-deleted'"></span>
+              <span x-show="p.last_sync_error" class="text-red-600" :title="p.last_sync_error">· sync error</span>
+              <div class="flex-1"></div>
+              <template x-if="p.tracked">
+                <div class="flex gap-0.5">
+                  <button class="chip-btn" @click="viewComments(p)">Comments</button>
+                  <button class="chip-btn" @click="reviewBacklog(p)" title="Apply the policy to comments posted before tracking started">Review older</button>
+                </div>
+              </template>
+              <a :href="p.permalink_url" x-show="p.permalink_url" target="_blank" rel="noopener" class="chip-btn">↗</a>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Save bar -->
+      <div x-show="dirtyCount" x-transition class="fixed bottom-4 inset-x-0 z-40 px-4">
+        <div class="max-w-xl mx-auto bg-slate-900 text-white rounded-xl shadow-xl px-4 py-3 flex items-center gap-3">
+          <span class="text-sm flex-1" x-text="`${dirtyCount} unsaved change${dirtyCount===1?'':'s'} · ${Object.values(trackedDraft).filter(Boolean).length} posts will be tracked`"></span>
+          <button class="btn !text-slate-300 hover:!text-white" @click="discardDraft()">Discard</button>
+          <button class="btn btn-primary" @click="saveTracked()" :disabled="savingTracked" x-text="savingTracked ? 'Saving…' : 'Save'"></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ ACTIVITY ============ -->
+    <section x-show="tab==='activity'" class="space-y-5">
+      <div class="grid sm:grid-cols-4 gap-3">
+        <div class="card p-4">
+          <div class="text-xs text-slate-500">Status</div>
+          <div class="mt-1 flex items-center gap-2 font-bold" :class="status.tone"><span class="w-2 h-2 rounded-full" :class="status.dot"></span><span x-text="status.label"></span></div>
+        </div>
+        <div class="card p-4">
+          <div class="text-xs text-slate-500">Schedule</div>
+          <div class="mt-1 font-bold" x-text="state?.settings.enabled ? 'Every ' + state.settings.intervalMinutes + ' min' : 'Not scheduled'"></div>
+        </div>
+        <div class="card p-4">
+          <div class="text-xs text-slate-500">Next run</div>
+          <div class="mt-1 font-bold tabular-nums" x-text="nextRunLabel ? 'in ' + nextRunLabel : '—'"></div>
+        </div>
+        <div class="card p-4">
+          <div class="text-xs text-slate-500">Meta calls today</div>
+          <div class="mt-1 font-bold tabular-nums" x-text="state ? state.safety.dailyCallsUsed + ' / ' + state.safety.dailyCallCap : '—'"></div>
+        </div>
+      </div>
+
+      <div class="card overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-100 flex items-center">
+          <div class="text-sm font-bold flex-1">Runs</div>
+          <button class="chip-btn" @click="loadActivity()">Refresh</button>
+        </div>
+        <div x-show="!runs.length" class="p-8 text-center text-sm text-slate-500">No runs yet. Turn the automation on in Settings or press “Run now”.</div>
+        <ul class="divide-y divide-slate-100">
+          <template x-for="r in runs" :key="r.id">
+            <li>
+              <button class="w-full text-left px-4 py-3 hover:bg-slate-50 flex items-center gap-3" @click="toggleRun(r)">
+                <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="runTone(r)"></span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 text-sm flex-wrap">
+                    <span class="font-semibold" x-text="ago(r.started_at)" :title="when(r.started_at)"></span>
+                    <span class="text-xs text-slate-500" x-text="{scheduled:'scheduled',manual:'manual',backlog:'older comments'}[r.trigger] || r.trigger"></span>
+                    <span x-show="r.dry_run" class="text-[11px] rounded bg-amber-100 text-amber-800 px-1.5 font-semibold">dry run</span>
+                  </div>
+                  <div class="text-xs text-slate-600 mt-0.5 flex gap-3 flex-wrap">
+                    <span x-text="r.new_comments + ' new'"></span>
+                    <span x-text="r.analyzed + ' reviewed'"></span>
+                    <span x-show="r.deleted" class="text-red-600 font-semibold" x-text="r.deleted + ' deleted'"></span>
+                    <span x-show="r.hidden" class="text-amber-700 font-semibold" x-text="r.hidden + ' hidden'"></span>
+                    <span x-show="r.skipped" class="text-slate-500" x-text="r.skipped + ' left for next run'"></span>
+                    <span x-show="r.failed" class="text-red-600" x-text="r.failed + ' failed'"></span>
+                  </div>
+                  <div x-show="r.error" class="text-xs text-red-700 mt-1 break-words" x-text="r.error"></div>
+                </div>
+                <span class="text-xs text-slate-400 tabular-nums" x-text="secs(r.elapsed_ms)"></span>
+              </button>
+              <div x-show="openRunId===r.id" x-transition class="px-4 pb-4 pl-10">
+                <div x-show="!(runActions[r.id]||[]).length" class="text-xs text-slate-500">No comments were hidden or deleted in this run.</div>
+                <div class="space-y-1.5">
+                  <template x-for="a in runActions[r.id] || []" :key="a.id">
+                    <div class="text-xs rounded-lg px-3 py-2" :class="a.success ? 'bg-slate-50' : 'bg-red-50'">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-semibold" x-text="actionLabel(a)"></span>
+                        <span x-show="a.category" class="rounded px-1.5 font-semibold" :class="cat(a.category).cls" x-text="cat(a.category).label"></span>
+                        <span class="text-slate-500" x-text="a.from_name || ''"></span>
+                        <span class="ml-auto" :class="a.success ? 'text-emerald-700' : 'text-red-700'" x-text="a.success ? '✓' : (a.error || 'failed')"></span>
+                      </div>
+                      <div class="mt-1 text-slate-700 break-words" x-text="a.message_preview"></div>
+                      <div x-show="a.reason" class="mt-0.5 text-slate-400" x-text="a.reason"></div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </li>
+          </template>
+        </ul>
+      </div>
+
+      <div class="card overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-100 text-sm font-bold">All recent actions</div>
+        <div x-show="!recentActions.length" class="p-6 text-center text-sm text-slate-500">Nothing yet.</div>
+        <ul class="divide-y divide-slate-100">
+          <template x-for="a in recentActions" :key="a.id">
+            <li class="px-4 py-2.5 text-xs flex gap-3 items-start">
+              <span class="text-slate-400 w-20 shrink-0" x-text="ago(a.created_at)" :title="when(a.created_at)"></span>
+              <span class="rounded px-1.5 font-semibold shrink-0" :class="a.source==='automod' ? 'bg-violet-100 text-violet-800' : 'bg-slate-100 text-slate-700'" x-text="a.source==='automod' ? 'auto' : 'you'"></span>
+              <span class="font-semibold shrink-0" x-text="actionLabel(a)"></span>
+              <span class="text-slate-600 break-words min-w-0 flex-1" x-text="clip(a.message_preview || a.reason || '', 160)"></span>
+              <span :class="a.success ? 'text-emerald-700' : 'text-red-700'" x-text="a.success ? '✓' : '✗'" :title="a.error || ''"></span>
+            </li>
+          </template>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section x-show="tab==='settings'" class="space-y-5 max-w-3xl">
+      <template x-if="settingsDraft">
+        <div class="space-y-5">
+          <div class="card p-5 space-y-4">
+            <div class="text-sm font-bold">Automation</div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <button type="button" class="switch" :class="settingsDraft.enabled && 'on'" @click="settingsDraft.enabled=!settingsDraft.enabled"></button>
+              <div><div class="text-sm font-semibold">Run automatically</div><div class="text-xs text-slate-500">Fetch, review and act on new comments on a schedule.</div></div>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <button type="button" class="switch warn" :class="settingsDraft.dryRun && 'on'" @click="settingsDraft.dryRun=!settingsDraft.dryRun"></button>
+              <div><div class="text-sm font-semibold">Dry run</div><div class="text-xs text-slate-500">Log what would be hidden or deleted without touching Facebook.</div></div>
+            </label>
+            <div class="grid sm:grid-cols-2 gap-4 pt-1">
+              <label class="text-sm">
+                <div class="font-semibold mb-1">Check every</div>
+                <select class="field w-full" x-model.number="settingsDraft.intervalMinutes">
+                  <template x-for="m in [15,30,60,120,240,360]" :key="m"><option :value="m" x-text="m < 60 ? m + ' minutes' : (m/60) + ' hour' + (m>60?'s':'')" :selected="settingsDraft.intervalMinutes===m"></option></template>
+                </select>
+              </label>
+              <label class="text-sm">
+                <div class="font-semibold mb-1">Max actions per run</div>
+                <input type="number" min="1" max="100" class="field w-full" x-model.number="settingsDraft.maxActionsPerRun" />
+                <div class="text-xs text-slate-500 mt-1">Anything above this waits for the next run.</div>
+              </label>
+            </div>
+          </div>
+
+          <div class="card overflow-hidden">
+            <div class="px-5 py-4 border-b border-slate-100">
+              <div class="text-sm font-bold">Policy</div>
+              <div class="text-xs text-slate-500 mt-0.5">What happens to a new comment in each category. Your Page’s own comments and anything you acted on yourself are never touched.</div>
+            </div>
+            <table class="w-full text-sm">
+              <thead class="bg-slate-50 text-xs text-slate-500">
+                <tr><th class="text-left font-semibold px-5 py-2">Category</th><th class="text-left font-semibold px-3 py-2">Action</th><th class="text-left font-semibold px-3 py-2">Min severity</th><th class="text-left font-semibold px-3 py-2">Only if AI says delete</th></tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100">
+                <template x-for="key in Object.keys(settingsDraft.policy)" :key="key">
+                  <tr>
+                    <td class="px-5 py-2"><span class="rounded px-1.5 py-0.5 text-xs font-semibold" :class="cat(key).cls" x-text="cat(key).label"></span></td>
+                    <td class="px-3 py-2">
+                      <select class="field" x-model="settingsDraft.policy[key].action" :class="settingsDraft.policy[key].action==='delete' ? 'text-red-700 font-semibold' : settingsDraft.policy[key].action==='hide' ? 'text-amber-700 font-semibold' : 'text-slate-500'">
+                        <option value="off">Leave it</option>
+                        <option value="hide">Hide</option>
+                        <option value="delete">Delete</option>
+                      </select>
+                    </td>
+                    <td class="px-3 py-2"><input type="number" min="0" max="10" class="field w-20" x-model.number="settingsDraft.policy[key].minSeverity" :disabled="settingsDraft.policy[key].action==='off'" /></td>
+                    <td class="px-3 py-2"><input type="checkbox" class="rounded" x-model="settingsDraft.policy[key].requireAiDelete" :disabled="settingsDraft.policy[key].action==='off'" /></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="flex gap-2 sticky bottom-4">
+            <button class="btn btn-primary shadow" @click="saveSettings()" :disabled="!settingsDirty || savingSettings" x-text="savingSettings ? 'Saving…' : 'Save settings'"></button>
+            <button class="btn btn-ghost" x-show="settingsDirty" @click="settingsDraft = JSON.parse(JSON.stringify(state.settings))">Discard</button>
+          </div>
+
+          <div class="card p-5 space-y-3">
+            <div class="text-sm font-bold">Safety</div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <button type="button" class="switch danger" :class="state.safety.killSwitch && 'on'" @click="setKillSwitch(!state.safety.killSwitch)"></button>
+              <div><div class="text-sm font-semibold">Kill switch</div><div class="text-xs text-slate-500">Stops every call to Facebook immediately, including fetching.</div></div>
+            </label>
+            <dl class="grid sm:grid-cols-2 gap-x-6 gap-y-2 text-xs pt-2">
+              <div class="flex justify-between"><dt class="text-slate-500">Writes to Facebook</dt><dd class="font-semibold" :class="state.safety.moderationAllowed ? 'text-emerald-700' : 'text-red-700'" x-text="state.safety.moderationAllowed ? 'Allowed' : 'Disabled (env)'"></dd></div>
+              <div class="flex justify-between"><dt class="text-slate-500">AI review</dt><dd class="font-semibold" :class="state.analyzerEnabled ? 'text-emerald-700' : 'text-red-700'" x-text="state.analyzerEnabled ? 'On' : 'Off'"></dd></div>
+              <div class="flex justify-between"><dt class="text-slate-500">Proxy</dt><dd class="font-mono" x-text="state.safety.proxy || 'none (direct)'"></dd></div>
+              <div class="flex justify-between"><dt class="text-slate-500">Page</dt><dd class="font-mono" x-text="state.page.pageId"></dd></div>
+              <div class="flex justify-between"><dt class="text-slate-500">Meta calls today</dt><dd class="font-mono" x-text="state.safety.dailyCallsUsed + ' / ' + state.safety.dailyCallCap"></dd></div>
+              <div class="flex justify-between"><dt class="text-slate-500">Paused endpoints</dt><dd class="font-mono" x-text="state.safety.cooldowns.length"></dd></div>
+            </dl>
+          </div>
+
+          <div class="card overflow-hidden">
+            <div class="px-5 py-3 border-b border-slate-100">
+              <div class="text-sm font-bold">Blocked people</div>
+              <div class="text-xs text-slate-500 mt-0.5">Blocking only works when Facebook shares the commenter’s ID, which it rarely does.</div>
+            </div>
+            <div x-show="!blocked.length" class="p-5 text-sm text-slate-500">Nobody is blocked.</div>
+            <ul class="divide-y divide-slate-100">
+              <template x-for="b in blocked" :key="b.psid">
+                <li class="px-5 py-2.5 flex items-center gap-3 text-sm">
+                  <span class="font-semibold" x-text="b.name || b.psid"></span>
+                  <span class="text-xs text-slate-400" x-text="ago(b.blocked_at)"></span>
+                  <div class="flex-1"></div>
+                  <button class="chip-btn" @click="unblock(b)">Unblock</button>
+                </li>
+              </template>
+            </ul>
+          </div>
+        </div>
+      </template>
+    </section>
+  </main>
+
+  <!-- Toasts -->
+  <div class="fixed top-4 right-4 z-50 space-y-2 w-[min(24rem,calc(100vw-2rem))]">
+    <template x-for="t in toasts" :key="t.id">
+      <div x-transition class="rounded-lg shadow-lg px-4 py-3 text-sm border"
+           :class="t.kind==='error' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-white border-slate-200 text-slate-800'" x-text="t.message"></div>
+    </template>
+  </div>
+</div>
+</body>
 </html>

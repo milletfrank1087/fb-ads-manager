@@ -1,7 +1,7 @@
 {
-  "name": "fb-ads-manager",
+  "name": "fb-comment-automod",
   "version": "0.1.0",
-  "description": "GFM Greece Ads + Comments manager — Meta Marketing API client with AI advisor. Root wrapper so the app in server/ builds and runs on Railway from the repo root.",
+  "description": "Facebook comment auto-moderation. Root wrapper so the app in server/ builds and runs on Railway from the repo root.",
   "private": true,
   "engines": {
     "node": "22.x"

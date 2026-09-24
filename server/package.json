@@ -1,7 +1,7 @@
 {
-  "name": "fb-ads-manager-server",
+  "name": "fb-comment-automod-server",
   "version": "0.1.0",
-  "description": "GFM Greece Ads dashboard — single-account, read-only, on-demand Meta Marketing API client with full safety hardening (kill switch, circuit breaker, daily cap, RL header capture).",
+  "description": "Hourly fetch, AI review and policy-based moderation of comments on tracked Facebook posts.",
   "type": "module",
   "private": true,
   "main": "server.js",

@@ -1,384 +1,52 @@
-# AGENTS.md — FB ads manager
+# AGENTS.md — Comment Auto-Moderation
 
-Rules every agent (and every script) in this repo MUST follow. Read this before touching code or making Graph API calls.
+Rules for every agent and script in this repo. Read before touching code or calling the Graph API.
 
-## Mission
+## What this is
 
-Single-operator dashboard for **full Facebook ad management + post/comment moderation** on Page `113297813778299`. Same safety posture as `../fb comments once more`: proxy-only egress, structured logging, secret masking, BUC-aware throttling.
+A single-operator app that watches chosen Facebook posts on Page `FB_TARGET_PAGE_ID`, fetches new comments on a schedule, has an LLM classify them, and hides/deletes them according to a per-category policy. Nothing else: no ads dashboard, no advisor, no page posting (removed 2026-09-24).
 
-## Current scope (as of 2026-05-28)
+## Flow
 
-**Narrowed scope: GFM Greece only, READ-ONLY, on-demand.**
-
-- Only `act_1622353565055773` (GFM Greece, Europe/Kiev timezone) is queried. The Node client REFUSES other account IDs (`safety.isAccountAllowed`).
-- `FB_READONLY=1` is the default. Only `GET` and read-only `POST /batch` (whose sub-ops are all `GET`) are allowed by `safety.preflight()`. Any non-GET write attempt is blocked with `readonly_mode` BEFORE any HTTP request leaves the server.
-- No automated polling. The user clicks Refresh in the UI; that's the only path to a Meta API call.
-- **Ad management writes are implemented (2026-05-29)**: pause/resume + budget edits on campaigns/adsets/ads, gated by `FB_ALLOW_AD_MANAGEMENT` (default `0`), **independent of `FB_READONLY`** (same pattern as comment moderation). Every write requires explicit per-action UI confirmation, is paced (750ms), and is written to the `ad_actions` audit log. See "Ad Management API" below.
+1. **Posts** (`lib/posts.js`) — the operator picks posts to track in the UI. Candidates come from the ads in every ad account the token can see (`/me/adaccounts` → batched `/act_x/ads`, optional `FB_AD_ACCOUNT_IDS` filter → `creative.effective_object_story_id`, incl. dark posts), the Page's `published_posts`, or a pasted ID/URL. Tracking is saved in `posts.tracked` with `tracked_at`.
+2. **Run** (`lib/automation.js`, every `intervalMinutes`, default 60, set in the UI):
+   - Fetch tracked posts' comments newest-first in Graph batches, stopping at the first already-known comment. Usually 1 batch call per run.
+   - AI-review every not-yet-reviewed comment (not the Page's own).
+   - Apply the policy to **candidates only**: reviewed, not deleted, not by the Page, never handled by a human, not already processed, and posted **after** `tracked_at`. Older comments are only acted on via the per-post "Review older" button.
+   - Log every action (`actions`) and the run (`runs`).
+3. **Policy** (`settings.automod.policy`): per category `{action: off|hide|delete, minSeverity, requireAiDelete}`. Defaults reproduce the pre-rewrite rule: delete when the AI recommends `delete` at severity ≥ 4 for hate/harassment/threat/spam/scam/AI/fake accusations.
 
 ## Non-negotiable rules
 
-### 1. Proxy-only egress to Meta
+- **Proxy is optional.** If `PROXY_HOST` and `PROXY_PORT` are set, every Graph call is tunneled through the proxy (never falls back to direct when configured). If they are empty, Graph calls go direct. OpenRouter is always called directly (only comment text + post context is sent).
+- **`appsecret_proof` on every call**, tokens masked in logs (`maskToken`). The only stored credential is `FB_SYSTEM_USER_ACCESS_TOKEN`; the Page token is minted at runtime (`lib/pageToken.js`) and re-minted once on error 190.
+- **Writes are gated** by `FB_ALLOW_COMMENT_MODERATION` (env) and the kill switch (env or UI, persisted). Writes are never batched; they go one at a time through the 750 ms throttle queue and are capped per run (`maxActionsPerRun`).
+- **Humans win.** Any manual action marks the comment `handled_by_human`; automation never touches it again.
+- **Rate limits.** Daily cap `FB_MAX_DAILY_CALLS` (per account-tz day), per-endpoint cooldown after consecutive errors, ≥60 min cooldown (or Meta's `estimated_time_to_regain_access`) on rate-limit codes 4/17/32/613/80000-80004, backoff at 80/90% usage headers.
+- **No `x-html`** in the UI; all user/Meta/LLM text renders via `x-text`.
+- **Polling, not webhooks (for now).** Page `feed` webhooks (`item: comment, verb: add`) would push comments in real time, but Meta only delivers them for ordinary users when the app is **Live** with **Advanced Access** (App Review) for `pages_manage_metadata`/`pages_read_engagement`; in Development mode only people with a role on the app trigger them. They also need a public HTTPS endpoint, `X-Hub-Signature-256` verification, and a `POST /{page}/subscribed_apps?subscribed_fields=feed`. If added later, keep the hourly poll as a backfill (Meta retries failed deliveries for ~36h but can still miss events).
+- Blocking needs the commenter's PSID (`from.id`), which Meta only returns with App Review + "Business Asset User Profile Access". The Block button only appears when an ID exists.
 
-- **Every** request to `graph.facebook.com`, `graph-video.facebook.com`, `www.facebook.com`, or `connect.facebook.net` MUST go through `PROXY_HOST:PROXY_PORT` with `PROXY_USER`/`PROXY_PASS` Basic auth.
-- The proxy gives us a consistent egress IP so Meta's geo-risk scoring does not flag us.
-- It is **forbidden** to add a code path that hits Meta without the proxy. No "fallback to direct", no "retry without proxy", no exceptions for healthchecks.
-- Default `trust_env=False` on every HTTP client so OS-level `HTTP_PROXY`/`NO_PROXY` cannot bypass our config.
-- If the proxy is unreachable, **fail loudly**. Never silently degrade.
-- `proxy_check.py` must pass before any FB script runs (humans run it, agents run it as a smoke check after env changes).
-- **LLM egress is the ONE exception, and only because it never touches Meta.** Comment AI review/reply (OpenRouter, `server/lib/analyzer.js`) calls `openrouter.ai` **directly** (not through the Meta proxy). The proxy exists solely to give a stable egress IP toward `graph.facebook.com`; routing third-party LLM traffic through it buys nothing and risks the proxy quota. No Meta token, comment author PII-name, or user identifier is sent to the LLM — only comment text + post context.
-
-### 2. Call-budget discipline (priority order)
-
-Minimize Graph API call_count in this order — **higher items save the most quota**:
-
-1. **Field expansion (highest leverage).** Combine sub-resources into one node fetch using nested `fields=`. Example: `/{ad-id}?fields=id,name,creative{id,object_story_id,thumbnail_url},adset{id,name,daily_budget},campaign{id,objective}`. Real-world testing shows field expansion counts as **1 call** vs N for separate fetches. This is the single biggest lever.
-2. **Cache.** TTL-based cache on GET responses keyed by `(method, path, sorted_params_minus_token)`. Default TTL 1h for stable data (campaign metadata, page info), 5min for engagement data (insights, comment counts), no cache for moderation reads. Bust on writes that touch the cached entity.
-3. **Batch (saves HTTP/proxy overhead, NOT rate quota).** Up to 50 ops per `POST /` with `batch=[...]`. Each sub-op still counts toward rate limits — batching only saves the round-trips, the proxy connection cost, and latency.
-4. **Throttle.** 750ms gap + jitter between top-level HTTP requests. Back off on `x-app-usage.call_count >= 80` or `x-business-use-case-usage[acct].call_count >= 80`. Refuse new writes when usage > 90% until next window.
-
-### 3. Batch correctly
-
-- Max 50 ops per batch. We split larger sequences into chunks.
-- **Do NOT** include multiple Adsets under the same Campaign in one batch (Meta forbids; the whole batch fails). Group/split by campaign.
-- **Use `include_headers=true`** on insights-bearing batches. The outer batch response does NOT include `x-fb-ads-insights-throttle` — that header is per-sub-op and only attached when `include_headers=true`. Without it, the dashboard cannot show the Marketing API tier or per-op throttle %. Cost: ~2KB extra payload; benefit: tier visibility + per-op rate-limit data. (For batches with no insights sub-op, `include_headers=false` is fine.)
-- Independent operations execute in parallel server-side — order is not preserved by execution time but IS preserved in the response array.
-- Use `name` + `{result=op_name:$.field}` JSONPath references for dependent ops in the same batch (e.g. create campaign, then create adset that references it, in one round-trip).
-- POST sub-ops put the form body in the `body` field as a URL-encoded string, not as JSON.
-
-### 4. Token discipline
-
-**Single stored credential: `FB_SYSTEM_USER_ACCESS_TOKEN`.** Everything else is derived at runtime. (Route 2, adopted 2026-05-28.)
-
-1. **`FB_SYSTEM_USER_ACCESS_TOKEN` — the ONLY token in `.env` the server reads.** Type `SYSTEM_USER`, `expires_at=0` (does not expire), 43 scopes, scoped to BM `1162517778681857`, the 5 owned ad accounts, AND the RiseHope Page (`113297813778299`, added to the BM 2026-05-28). Use directly for every ads_management / ads_read / insights / business_management / catalog / lead-retrieval call (these accept a user/system-user token).
-2. **Page access token — MINTED at runtime, never stored.** Page-content edges (`/{page}/feed`, `/{post}/comments`, `/{comment}`) require a *Page* access token; the system-user token returns `#10` (reads) / `1705` (writes) on them. `server/lib/pageToken.js` mints the Page token from the system-user token via `GET /{page_id}?fields=access_token` and caches it in memory (TTL 60 min). A Page token derived from a never-expiring system-user token also never expires; on `error.code === 190` the client invalidates the cache and re-mints once. Request it by passing `{ tokenKind: 'page' }` to `fb.get` / `fb.moderate`.
-3. **`FB_ACCESS_TOKEN` (commented out in `.env`)** — the old static RiseHope Page token. Superseded by runtime minting; retained commented for the one-time Python bootstrap tools in `src/`. Do NOT reintroduce it into the server.
-4. **`FB_USER_ACCESS_TOKEN`** = long-lived user token. Keep only as a fallback / for `/debug_token` self-checks / when granting new BM assets. Never use for production reads.
-
-**Token routing rule:** `tokenKind` defaults to `'sysuser'`. Use `tokenKind: 'page'` ONLY for Page-content edges. The mint call itself goes through the normal `fb.get` pipeline, so it is proxied, signed with `appsecret_proof`, throttled, counted against the daily cap, and its rate-limit headers are captured like any other call.
-
-**Rules:**
-
-- **NEVER** use a user token for an operation that the system-user token can serve. If a call works for both, choose system-user.
-- **`appsecret_proof` is REQUIRED on every call.** HMAC-SHA256 of `access_token` with `FB_APP_SECRET` as the key, appended as the `appsecret_proof` param (also send `access_token` itself). The `FbClient` does this automatically — never bypass it.
-- Tokens are masked in logs as `EAAN2GNL...ZDZD (len=204)` — never log the full token.
-- On `error.code === 190` (OAuth invalid) **on the system-user token**, stop immediately. Re-generate via Business Settings → System Users → Generate Token (or via `POST /{sysuser_id}/access_tokens` if Privacy Policy URL is set). Do NOT retry.
-- On `error.code === 190` on the Page or User token: same — stop, refresh, retry once.
-- Token rotation: even though `expires_at=0`, rotate the system-user token if it's ever exposed. `data/system_user_token.json` is the audit trail of when it was issued.
-
-### 5. Rate-limit awareness
-
-Capture and persist these response headers on EVERY response (single-op, batch outer, AND each batch sub-op when `include_headers=true`):
-
-- `x-app-usage` — `{call_count, total_cputime, total_time}` percentages (0–100). Triggers throttle at 100. **Marketing API endpoints do NOT return this header.** It is present only on non-Marketing Graph API calls (Pages, user data, etc.).
-- `x-business-use-case-usage` — keyed by ad-account ID; per-BUC type (`ads_management`, `ads_insights`, `pages`, etc.). Includes `estimated_time_to_regain_access` in minutes when throttled. **When present, the cooldown MUST be at least this many minutes.** This is the canonical rate-limit signal for Marketing API.
-- `x-ad-account-usage` — `acc_id_util_pct` for the older platform tier.
-- `x-fb-ads-insights-throttle` — `{app_id_util_pct, acc_id_util_pct, ads_api_access_tier}`. Specific to `/insights` endpoints. **Only delivered on the per-sub-op response inside a batch (requires `include_headers=true`), NOT on the outer batch response.**
-- `x-fb-ads-insights-reach-throttle` — reach-with-breakdowns >13mo (10/account/day).
-- `x-page-usage` (when present) — Page-level limits.
-
-**There is NO public endpoint that returns the data shown on `developers.facebook.com/apps/{app_id}/rate-limit-details/...`.** That page is rendered from Meta's internal GraphQL. Tested directly: `GET /{app_id}?fields=rate_limit_details` and `GET /{app_id}?fields=marketing_api_rate_limit` both return `(#100) Tried accessing nonexisting field`. All the data on that page IS available through the headers above; the dashboard's `/api/rate-limit-details` route surfaces them in the same visual layout.
-
-Map of error codes we treat as rate-limit:
-
-- `4` — App-level too-many-calls
-- `17` — User request limit reached
-- `32` — Page-level throttle
-- `613` — Too many calls from this ad-account
-- `80000`–`80004` — BUC limits (`80004` = "Business Use Case limit reached")
-
-On any of these: mark `rateLimitedUntil = now + 60min` (or use `estimated_time_to_regain_access` if FB returns it), short-circuit subsequent calls in the current batch, return cached/skipped responses to upstream.
-
-### 5b. Anti-suspension hardening (Node server)
-
-Meta's 2026 enforcement infrastructure (per GoMarble, HyperFX, Soku, and Meta's own rate-limit docs) flags Business Managers exhibiting any of these signatures. We are explicitly defended against each:
-
-| Signature Meta flags | Our defense |
-|---|---|
-| Burst traffic (tight loops, many calls/sec) | `MIN_REQUEST_INTERVAL_MS=750` + jitter; on-demand refresh only (no auto-polling) |
-| Bulk catalog/audience updates within minutes | READ-ONLY mode enforced at the client layer |
-| Malformed / 4xx storms | Circuit breaker trips after `FB_CIRCUIT_BREAKER_THRESHOLD=2` consecutive errors per endpoint |
-| Blind retries on 429 | On RL error codes, set per-endpoint cooldown of `max(FB_CIRCUIT_BREAKER_COOLDOWN_SECONDS, estimated_time_to_regain_access)` |
-| Per-ad-set budget edits >4/hour | No writes at all in current scope |
-| Sustained high BUC% | Pre-emptive backoff at 80% util (`server/lib/fbClient.js: throttle()`) |
-| Account-tied call volume spikes | `FB_MAX_DAILY_CALLS=500` hard cap per account-tz day, halts at limit |
-
-**Kill switch.** Set `FB_KILL_SWITCH=1` in env, or call `POST /api/kill-switch {"on":true}`, and the client refuses ALL Meta API calls instantly. Use if you observe unexplained behavior or want to pause during peak Meta-side incidents.
-
-### 6. "Save" pattern (coalesce edits)
-
-For the dashboard UI: never fire a Graph write on every keystroke / toggle. Stage edits in browser state, surface a "Save changes" button, and on click fire ONE batched write (≤50 ops) per save. Same applies to bulk moderation — collect comment-action intents and fire as one batch.
-
-### 7. Logging contract (per `proactive-logging.mdc`)
-
-- Structured `{event, level, ...context}` JSON-ish log lines (stdlib `logging` with a JSON formatter or `print` of dicts is fine for scripts).
-- Every Graph call logs: `{method, path, attempt, callNumber, paramsMasked}` BEFORE the call and `{status, bodyKeys, code, subcode}` AFTER.
-- Errors include: `{code, subcode, status, message, path}` — never the raw token, never PII from message bodies of users.
-- Never bare `print()` debug. Always include the operation name and identifier.
-
-### 8. Permissions we need (target state)
-
-For the goals "full ad management" + "post/comment moderation":
-
-| Permission                  | Why                                                                          |
-| --------------------------- | ---------------------------------------------------------------------------- |
-| `ads_management`            | Create/edit/pause campaigns, ad sets, ads. **Required**, not satisfied by `ads_read`. |
-| `ads_read`                  | Insights reads (granted alongside `ads_management`).                         |
-| `pages_show_list`           | Enumerate Pages on `/me/accounts`.                                            |
-| `pages_read_engagement`     | Read posts, comments, reactions on the Page.                                  |
-| `pages_manage_engagement`   | Like/reply/hide/delete/unhide comments.                                       |
-| `pages_manage_posts`        | Create/edit/delete posts (organic + dark posts via ads).                      |
-| `pages_manage_metadata`     | Block/unblock users on the Page (`/{page}/blocked`).                          |
-| `pages_read_user_content`   | Read user-generated content (comments) including from non-page accounts.     |
-| `business_management`       | (Optional but recommended) Access Business Manager assets, system users.     |
-| `read_insights`             | Page-level insights, post-level performance.                                  |
-| `public_profile`            | Granted by default.                                                          |
-
-The probe script (`src/probe.py`) reports which of these are actually on the token and what we CAN/CANNOT do as a result.
-
-### 8b. Conversion attribution rules (CRITICAL — easy to get wrong)
-
-Meta emits redundant `action_type` names during ongoing migrations. Summing all matching action_types double-counts. The mutually-exclusive matchers in `server/lib/insights.js: ACTION_GROUPS` are correct; DO NOT add overlapping matchers. Rules:
-
-- **Total / unified** column: `omni_X` only (`omni_purchase`, `omni_add_to_cart`, `omni_initiated_checkout`, `omni_landing_page_view`). Meta deduplicates internally — this is the canonical "All sources" count.
-- **In-app** column: only the advertiser's own mobile-app events — `mobile_app_X` and `app_custom_event.fb_mobile_X`. Never include `onsite_app_X` (that's Meta-Shop on mobile, not the advertiser's app — covered by the Meta column).
-- **Website** column: only Pixel-tracked events on the advertiser's website — `offsite_conversion.fb_pixel_X`. Never include `onsite_web_X` (that's the advertiser's same website tracked via CAPI server-side; Meta emits BOTH for the same event during the offsite→onsite migration — summing them double-counts).
-- **Offline** column: `offline_conversion.X` (CSV/CRM imports).
-- **Meta-native** column: `onsite_conversion.X` only — events on Meta's own surfaces (FB/IG Shops, Threads). Never include the bare `X` (`purchase`, `add_to_cart`) — that's a legacy aggregate that overlaps with everything else.
-
-**Consequence:** the source-breakdown columns may NOT sum to the Total column. This is correct behavior, not a bug. A purchase tracked via both Pixel AND CAPI is counted ONCE in `omni_purchase` but might appear once in `offsite_conversion.fb_pixel_purchase` AND once in `onsite_web_purchase`; we only count the first. The aggregate row in the dashboard footer also follows this rule.
-
-**ROAS columns:** `purchase_roas` is a list of `{action_type, value}` returned by Meta. For our display:
-- `purchase_roas_total` ← entry where `action_type == 'omni_purchase'` (fall back to first entry)
-- `purchase_roas_website` ← `website_purchase_roas` entry with `action_type == 'offsite_conversion.fb_pixel_purchase'` (fall back to first)
-- `purchase_roas_app` ← `mobile_app_purchase_roas` first entry
-
-Never sum the array — ROAS is a ratio.
-
-**Cost-per-X columns:** prefer `cost_per_action_type[action_type=X].value` when present (Meta's own calculation). Compute `spend / count` only as a fallback for the totals row.
-
-### 9. File hygiene
-
-- No comments inside code unless they explain a non-obvious WHY (per `code-practices.mdc`).
-- No `*.db`, `data/*.json`, `.env`, `*.log` ever committed (`.gitignore` enforces).
-- `lessons.md` is the running journal — every field-tested finding goes there with date + evidence link.
-- Keep scripts thin. Prefer one well-batched script over many tiny ones.
-
-## File map (current)
+## Files
 
 ```
-.env                       # credentials (gitignored)
-.env.example               # template
-.gitignore
-requirements.txt           # Python deps (bootstrap scripts only)
-AGENTS.md                  # this file
-lessons.md                 # running log of findings
-src/                       # Python bootstrap + diagnostics (one-time / occasional)
-  proxy_check.py           # verify proxy egress, zero FB calls
-  probe.py                 # batched permissions + rate-limit + accounts probe (user token)
-  exchange_token.py        # short-lived -> long-lived user token, persists to .env
-  inspect_app.py           # diagnostics on the app object
-  setup.py                 # one-shot BM bootstrap (system user + assignments + token)
-  save_system_token.py     # verify + persist a token generated in the BM UI
-  smoke_test.py            # end-to-end ads_management sanity (campaigns/ads/insights)
-  capabilities.py          # comprehensive probe of ad/page/BM capabilities
-  lib/                     # shared Python client + store (used by Python scripts)
-server/                    # Node/Express dashboard — the PRODUCT
-  package.json
-  server.js                # Express bootstrap + 7 routes including /api/rate-limit-details
-  lib/
-    env.js                 # config loader + safety env vars + OpenRouter/analysis config
-    logger.js              # colored, structured terminal logger
-    safety.js              # kill switch, circuit breaker, daily cap, cooldowns, isModerationAllowed
-    store.js               # better-sqlite3 schema (17 tables incl. ad_posts, comment_analyses, auto_mod_rules, moderation_log, blocked_users) + queries
-    insights.js            # ACTION_GROUPS mutually-exclusive matchers (see §8b) + ROAS_FIELDS + normalizeInsightsRow
-    fbClient.js            # proxied, signed, throttled Graph client; tokenKind sysuser|page; fb.moderate (gated writes)
-    pageToken.js           # runtime Page-token minting + in-memory cache (Route 2)
-    refresh.js             # orchestrates: GET account + batched(campaigns,insights) = 2 HTTP calls; builds totals from SUMMABLE_COLS
-    comments.js            # Comments Manager FB action layer: COMMENT_FIELDS, normalizeCommentList + linkMyReplies (page-reply detection from flat stream), hide/unhide/delete/like/reply/block/blockByComment/deleteAndBlock, all audited
-    analyzer.js            # OpenRouter LLM: batch comment classify+translate, post summary, reply suggestion (DIRECT egress, model fallback)
-    autoMod.js             # pattern rules engine (contains/equals/regex/has_url) -> HIDE only; evaluate + dry-run
-    commentSync.js         # discover owned posts from ads -> BATCHED field-expanded sync (meta+comments per post, page-token batches) -> AI analysis (batch+fallback) -> apply auto-hide rules
-  public/
-    index.html             # Tailwind+Alpine dashboard + full-screen Comments Manager overlay
-    app.js                 # dashboard() Alpine component: 7 column groups, localStorage persist, sticky-left Campaign column, formatters
-    comments-app.js        # commentsManager() Alpine component: post rail, inbox, AI cards, filters, bulk, rules/audit/blocked tabs
-  node_modules/            # gitignored
-data/                      # gitignored runtime outputs
-  dashboard.db             # shared SQLite (Python tooling + Node server)
-  probe_report.json
-  setup_report.json
-  system_user_token.json
-  capabilities_report.json
-  smoke_test.json
+server/server.js          Express routes (/api/state, settings, posts, comments, runs, blocked); bulk actions are sequential per-comment calls from the UI
+server/lib/env.js         config
+server/lib/fbClient.js    proxied, signed, throttled Graph client (get / write / read-only batch)
+server/lib/pageToken.js   runtime Page token
+server/lib/safety.js      kill switch, daily cap, cooldowns, write gate
+server/lib/store.js       SQLite schema + queries (data/automod.db, or $DATA_DIR)
+server/lib/posts.js       post discovery + paste-to-track
+server/lib/comments.js    comment normalisation + hide/unhide/delete/like/reply/block (audited)
+server/lib/analyzer.js    OpenRouter classification, post context, reply drafts
+server/lib/automation.js  settings/policy, fetch → review → act pipeline, scheduler
+server/public/            index.html + app.js (Alpine + Tailwind CDN)
 ```
 
-## How to run
-
-One-time setup (already done — do NOT re-run unless rotating the token):
+## Running
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python src\proxy_check.py
-python src\probe.py            # optional, verify user-token scopes
-python src\setup.py            # BM bootstrap up to system-user creation + assignments
-# UI: generate token in Business Settings -> System Users -> Generate Token
-python src\save_system_token.py PASTED_TOKEN
-python src\smoke_test.py       # final verification across all active ad accounts
+cd server; npm install; node server.js   # http://localhost:3000
 ```
 
-Routine smoke check (run any time to confirm token + proxy + permissions still healthy):
-
-```powershell
-.\.venv\Scripts\python.exe src\smoke_test.py
-```
-
-Dashboard (Node/Express):
-
-```powershell
-cd server
-npm install          # first time only
-node server.js       # boots on http://localhost:3000
-
-# In another terminal — verify endpoints:
-curl http://localhost:3000/api/health
-curl http://localhost:3000/api/safety
-curl -X POST http://localhost:3000/api/refresh -H "Content-Type: application/json" -d '{\"date_preset\":\"today\"}'
-```
-
-### API surface (Node server)
-
-| Route | Method | Effect | Hits Meta? |
-|---|---|---|---|
-| `/` | GET | Serves dashboard HTML | No |
-| `/api/health` | GET | Liveness + uptime + safety snapshot | No |
-| `/api/safety` | GET | Kill switch, readonly, daily cap, cooldowns | No |
-| `/api/kill-switch` | POST | `{on:true/false}` — engage/release the kill switch | No |
-| `/api/dashboard` | GET | Returns cached campaigns + insights from SQLite | No |
-| `/api/refresh` | POST | `{date_preset, only_had_delivery}` — pulls fresh data | YES — exactly 2 calls (account + batched(campaigns,insights)) |
-| `/api/usage` | GET | Recent `usage_samples` (rate-limit header history) | No |
-| `/api/rate-limit-details` | GET | Latest captured `x-app-usage`, `x-business-use-case-usage`, `x-fb-ads-insights-throttle`, broken out per-account and per-BUC-type, with the Marketing API tier. Mirrors the Meta dev-dashboard view. | No |
-| `/api/page-token` | GET | Minted Page-token snapshot (no secret). `?verify=1` force-mints + reads the page via the page token. | Only with `?verify=1` (≤2 calls) |
-
-### Ad Management API (`/api/ads/*`)
-
-Pause/resume + budget edits, surfaced as the Off/On toggle and inline "Budget" editor on each dashboard row. Gated by `FB_ALLOW_AD_MANAGEMENT` (default `0`), independent of `FB_READONLY`.
-
-| Route | Method | Effect | Hits Meta? |
-|---|---|---|---|
-| `/api/ads/state` | GET | `{allowAdManagement, readonly, killSwitch}` for the UI's "Managing live" chip | No |
-| `/api/ads/audit` | GET | Append-only `ad_actions` log (incl. blocked/failed attempts) | No |
-| `/api/ads/:level/:id/status` | POST | `{status: ACTIVE\|PAUSED}` on a campaign/adset/ad; `MANAGE`-gated | YES (when enabled) |
-| `/api/ads/:level/:id/budget` | POST | `{daily_budget\|lifetime_budget}` in **minor units** on a campaign/adset; `MANAGE`-gated + **per-entity ≤4 budget edits/hour** guard | YES (when enabled) |
-| `/api/ads/:level/:id/breakdowns` | GET | Insights split by `breakdown` (age_gender, country, region, platform, placement, device, hourly) × `date_preset`. Adds derived purchases/value/ROAS. | YES (read) |
-| `/api/ads/:level/:id/activities` | GET | Change history for one entity — reads the **account** activity feed and filters by `object_id` (the per-node `activities` edge returns `#100`). | YES (read) |
-| `/api/ads/activities` | GET | Whole-account change feed (`?entity_id=` optional) | YES (read) |
-| `/api/ads/ad/:id/preview` | GET | Rendered ad preview iframe for an `ad_format` (DESKTOP_FEED_STANDARD, MOBILE_FEED_STANDARD, INSTAGRAM_*, etc.) | YES (read) |
-| `/api/ads/:level/:id/duplicate` | POST | Deep-copy a campaign/adset to a **PAUSED** copy (`status_option=PAUSED`, `deep_copy=true`). Never edits the source; `MANAGE`-gated. | YES (when enabled) |
-
-### Ad management discipline
-
-- All ad writes go through `fb.manage(method, path, data, key)` → `safety.preflight(ep, 'MANAGE')`, using the **system-user** token (it holds `ads_management`). `MANAGE` is a distinct safety method: it bypasses the `FB_READONLY` block but is refused (HTTP 423, `ad_management_disabled`) unless `FB_ALLOW_AD_MANAGEMENT=1`, and is always halted by the kill switch.
-- Only `ACTIVE`/`PAUSED` are accepted for status (no archive/delete) — keeps writes safe + reversible. Budgets are validated as positive integers in minor units; ads have no budget edge.
-- Every attempt (success, failure, or gate-blocked) is appended to `ad_actions` with before/after values, payload, response and error — same auditability as `moderation_log`. Local entity status/budget is updated on success so the UI reflects the change without a full refresh.
-- The UI confirms each write (`confirm()` dialog naming the entity + new value) before sending. Writes are paced by the global 750ms throttle; we do **not** batch ad writes (same anti-suspension reasoning as comment writes).
-- **Budget edit rate guard (anti-suspension):** Meta caps budget edits at ~4/hour per entity; exceeding it triggers a 1-hour lockout AND flags the account. `setBudget` counts successful `budget` rows in `ad_actions` for that `entity_id` in the last hour and refuses locally (HTTP 429, `budget_rate_limit`) before ever calling Meta. This was confirmed against 2026 ban-pattern write-ups (GoMarble/Soku/Blend) + Meta rate-limit docs.
-- **Read intelligence** (`breakdowns`/`activities`/`preview`) goes through `fb.get` (`GET` preflight — allowed even in read-only), counts against the daily cap + throttle, and never mutates. Previews need a *user* token; the system-user token qualifies. `duplicate` is the only "scaling" write and is safe-by-construction: the copy is created **PAUSED** and the source is untouched, satisfying "do not edit working campaigns".
-
-### Strategy Advisor API (`/api/strategy/*`) — suggest-only, reads only
-
-A performance advisor (`server/lib/strategist.js`) that analyzes the account and proposes a ranked action plan. It **never writes to Meta** — every output is a recommendation the operator applies manually via the existing toggle / budget / Duplicate controls. Surfaced as the indigo **Strategy** button in the header → full-screen drawer.
-
-| Route | Method | Effect | Hits Meta? |
-|---|---|---|---|
-| `/api/strategy/analyze` | POST | `{window: last_7d\|14d\|28d\|30d\|90d}`. Pulls account/campaign/adset insights + entities + placement/age-gender/hourly breakdowns **plus** per-campaign daily series (90d), active-ad creative ranking, and 3 reach windows — all in **one batched read call (13 ops)**. Derives learning-phase health, patterns, trend, fatigue/scaling signals, the ranked rule action list, AND the **decision digest** (see below). Cached in-memory as `lastAnalysis`. | YES (1 batched read) |
-| `/api/strategy/last` | GET | Returns the last cached analysis (incl. narrative/briefing once generated). | No |
-| `/api/strategy/narrative` | POST | Gemini **weekly plan** from `lastAnalysis.digest` (`analyzer.strategyNarrative`): headline, account summary, prioritized `weekly_plan[]`, watch-outs. Requires `OPENROUTER_API_KEY`. | No (LLM direct) |
-| `/api/strategy/briefing` | POST | Gemini **daily standup** from `lastAnalysis.decisions` (`analyzer.dailyBriefing`): headline, `standing_today` (today vs day-of-week-adjusted normal + 7d trend), `confident_actions[]` (high/medium only), `opportunities[]`, `watch[]`, `do_not_act[]`. Requires `OPENROUTER_API_KEY`. | No (LLM direct) |
-
-### Decision engine (`server/lib/decisions.js` + `server/lib/stats.js`) — "confident, not one day's noise"
-
-The decision digest (`lastAnalysis.decisions`) is the **decision-grade** layer feeding the Daily Briefing tab. It exists because at GFM's low volume (~1-100 conv/wk per entity) frequentist p-values are useless (~384 conversions needed for ±5%/95%). Instead it uses **Poisson/Bayesian credible intervals** on conversion counts, gated by sample size + persistence + day-of-week-adjusted baselines. Contents:
-
-- `today`: latest **complete** day vs the same-weekday trailing baseline (mean/sd → **z-score** per metric); `verdict` is `anomalous` only when |z|≥2. Correctly separates "spend is up because you scaled" (high spend-z) from "CPA is actually broken" (high cpa-z).
-- `trend7`: last-7d vs prior-7d (naturally day-of-week balanced) including **CPM**; `earlySaturation` fires when CPM is rising ≥15% while CTR holds — the earliest saturation tell (precedes the CPA spike).
-- `concentration`: top active campaign's share of account spend; `concentrated` (≥40%) warns of the saturation-cliff / single-point-of-failure risk (playbook counter-point to over-consolidation).
-- `dayparting`: best/worst weekday + hour (reuses the strategist's volume-gated patterns) — framed as a gentle budget lean, never a hard on/off schedule.
-- `segments` (**gender**, **age**, **platform**, age×gender, placement, **country**, **device**): each cell gets CPA + **95% CI**, compared to the **account-blended** CPA. `verdict` (`better`/`worse`/`similar`) is only emitted when the cell's expected conversions fall OUTSIDE the observed count's CI; low-volume cells are `insufficient`. `confidence` tier = `high` (≥50 conv) / `medium` (15-49) / `low` (5-14) / `insufficient` (<5). **Prefer the gender/age/platform ROLLUPS** — single age×gender or placement cells are usually too small (wide CI → "similar"), but the rollups pool conversions so a real pattern like "men cost 30% more" or "Instagram is a junk placement" surfaces with `high` confidence. The `narrow_targeting` impact floor is **5%** of spend (lowered from 8%) so a small-but-significant junk placement still surfaces. **Country is context-only** (this account = one campaign per country, so a country verdict ≈ a campaign — excluded from targeting *actions*). Gender/age/platform/age-gender/device ARE within-campaign action levers; country is not.
-- `saturation.freshHeadroom`: frequency < 1.5 with healthy reach ⇒ still mostly new people, so lower ROAS is normal prospecting and there's room to scale (playbook frequency nuance).
-- `creative`: Meta `quality_ranking` for ACTIVE ads w/ ≥1000 impr — below-average creative flagged (caps CPM/CPA).
-- `saturation`: Net New Reach % (3 reach windows) + frequency → `healthy`/`watch`/`saturating`.
-- `signal`: CAPI/Dataset-Quality advisory (probe returned empty → browser-pixel-only suspected).
-- `growth` (`buildGrowth`): the **revenue-EXPANSION** layer (separate from the defensive `decisions[]` above — that side prevents loss; this side answers "how do I grow donations?"). Contents: `funnel` (LPV → ATC → IC → purchase step counts with per-step drop %, the **biggest absolute leak**, and the checkout/cart **abandoner pool** = warmest genuinely-incremental retarget audience); `headroom` (active campaigns still at frequency < 1.6 = room for NEW prospecting audiences, not just more budget); `value` (Value-Optimization readiness — gated on CAPI present AND ~50-100 purchases/wk, since donation sizes vary widely); and a ranked `levers[]` each tagged `foundational`/`primary`/`secondary`/`ready`/`gated`/`avoid`. The ranking is incrementality-first per the growth playbook: **CAPI (foundational) → donor-seed lookalikes per geo (primary) → interest prospecting (secondary) → a small abandoner-retargeting layer (ready/gated) → Value Optimization (gated) → cost caps on the scaled winner(s) (ready when ≥1 ACTIVE ad set clears ~50 conv/wk + learning-complete, else avoid)**. The cap lever is computed against the live `adsets` (volume-gated), and when ready it spells out the two-governor / inflated-budget recipe with a concrete suggested cap (CPA×1.15, under the avg-donation breakeven ceiling). Needs `ic` from `totals` (strategist aggregates `icTotal`).
-- `decisions[]`: per-entity + targeting + cost-cap candidates, each with an action, a `confidence` tier+score (`stats.decisionConfidence`), a rationale, a per-campaign `wow` (last-7d vs prior-7d), and `whatToWaitFor` when sub-high. Kill/scale require **persistence** (≥3 consecutive days breaching the band) AND ≥15 conversions; otherwise downgraded to `watch`/`hold`. **Scale-up safety gate:** even with a 3-day winning streak, a campaign is downgraded to `hold` if its WoW ROAS ≤ −20% or WoW CPA ≥ +25% — the playbook rule "never scale into a degrading weekly trend".
-
-### Strategy advisor discipline
-
-- **Suggest-only by design.** No `MANAGE`/`MODERATE` calls anywhere in `strategist.js`; it only ever calls `fb.get`/`fb.batch`. There is no "apply" button — the operator acts manually, so the account-suspension surface is unchanged.
-- **KPI auto-selection:** picks the metric carrying signal for the account (purchases → other conversions → link clicks) so a $20-40/day donation account isn't judged on a KPI it doesn't optimize.
-- **Noise guard:** every pattern (weekday/hour/placement/age-gender/trend) carries a `reliable` flag based on conversion volume; the UI shows a "low data" chip and the AI prompt is told patterns are directional, not gospel. Day-of-week/hour always widen to up to 90 days for sample size even when the headline window is shorter.
-- **Operating mandate = the account-specific override** (`ACCOUNT_MANDATE` in `analyzer.js`, added 2026-06-04 after a full live re-evaluation of the account; injected into ALL THREE prompts — STRATEGY, BRIEFING, CHAT — right after `COMMUNITY_PLAYBOOK`, and the load-bearing rules are re-stated at the END of the chat context to beat centrifugation). The generic playbook says what a good move *looks like*; the mandate constrains *which moves are allowed here*, derived from the operator's own answers: **(1) Objective = ROAS-efficient SCALE with NO budget ceiling** — judge "good/bad" ROAS/CPA against the account's OWN trailing baseline, never a hardcoded number. **(2) Action space = structure / budget / audience / geo / bid ONLY.** **(3) CREATIVE IS OFF-LIMITS (hard rule)** — one fixed image across beneficiaries (only copy differs), so the advisor NEVER proposes a creative refresh/new hook/test; a fatigue diagnosis becomes a STRUCTURAL prescription (rotate/expand audience, new geo, duplicate to a fresh pocket, budget/bid). The `creative_refresh` + `fix_tracking` strategies were dropped from the weekly-plan enum, and the strategist's frequency-fatigue signal now emits `scale_horizontal` ("widen the audience"), not creative. **(4) CAPI is LIVE** (proven by `get_signal` — GFM Improved ~52% server events): trust the donation counts/values; never tell the operator they're "blind" or to "fix tracking". **(5) Geo = pure ROI.** The same mandate is mirrored in the persisted `advisor_profile` (`riskTolerance`/`notes`) so `buildAdvisorMemory` re-injects it as standing operator memory. Verified end-to-end: asked to "fix fatigued Image 1 and keep scaling", the advisor refused a creative refresh, used the real `learning_stage_info` (SUCCESS, 115 conv/wk ⇒ cap-eligible), and proposed the two-governor cost cap on a DUPLICATE — zero creative/tracking advice.
-- **Community playbook = the AI's brain** (`COMMUNITY_PLAYBOOK` in `analyzer.js`, injected into BOTH `STRATEGY_SYSTEM_PROMPT` and `BRIEFING_SYSTEM_PROMPT`): a distilled, cross-validated 2026 ecommerce/practitioner consensus — explicitly **NOT** Meta's own in-app suggestions (those optimize for spend, not ROI). Covers kill/pause rules (3× CPA + 0 conv hard kill; 2× spend + 7d + 1.5× CPA sustained-loss; spend floors; don't edit in learning), scale (vertical ≤20%/48-72h, horizontal surf-scaling, healthy-vs-unhealthy CPM signatures, frequency<1.5 = valuable TOF), the which-metric-broke-first diagnostic, structure (consolidate but cap concentration ~40% — the saturation-cliff counter-point), bidding (volume-gated caps — only on an ACTIVE, learning-complete ad set at ~50+ conv/wk; the two-governor / inflated-budget method: inflate budget 2-3×, let a cost cap ≈ CPA×1.1-1.2 govern spend, ratchet down ~5-10%, on a duplicate only), day/time weighting, and attribution caveats (CAPI gap, platform ROAS ≠ incremental). The playbook says *what* a good move looks like; the **decision digest gates whether THIS account has the evidence** to make it.
-- **Hard guardrails baked into the AI prompt** (`STRATEGY_SYSTEM_PROMPT`): consolidate fragmented ABO ad sets first; vertical scaling ≤20% per 48-72h; Cost Cap / Bid Cap are **volume-gated, not banned** — recommend them only for an ad set the digest shows ACTIVE + learning-complete + sustaining ~50+ conv/wk (the binding gate is conversion VOLUME, not a spend floor; the old "$5k/week" floor was wrong), via the two-governor / inflated-budget method on a **duplicate** (never the live winner); day-parting at low budget is a gentle budget weighting, not hard on/off. The cap gate is **per-ad-set and read from the live digest** — the prompt never hardcodes account metrics and tells the model to fetch fresh data when unsure.
-- **Ask Advisor chat** (`POST /api/strategy/chat` → `strategyChat` in `analyzer.js`, "Ask Advisor" tab): a free-form, multi-turn conversation grounded in the **same last-analysis snapshot** (account totals, campaigns, ACTIVE ad sets incl. budgets/weekly volume, and the full decision digest) plus the `COMMUNITY_PLAYBOOK`/GROWTH brain. It exists to answer the follow-ups the structured cards can't — "what cost cap should I set on Portugal and how?", "which lookalike first?", "give me the exact retargeting ad set + daily budget". It returns prose (not JSON — uses `runChatWithFallback`/`callOpenRouterText`, temp 0.35), computes concrete numbers from the snapshot (e.g. cost cap ≈ entity CPA × 1.1-1.2, retargeting budget sized to the abandoner pool + account spend), respects the same gates (caps only above ~50 conv/wk, Value-Opt needs CAPI), and is **suggest-only** — it never writes to Meta. Client sends `{message, history, stream, sessionId}` (history = last ~10 turns); the answer is rendered with a small safe markdown formatter (`renderMd`, escapes then bold/headings/bullets/code). 409 if no analysis is loaded yet. **Streaming:** when `stream:true`, the endpoint responds as SSE (`data: {type:'delta'|'done'|'error'}`) via `strategyChatStream`/`streamOpenRouter` (model fallback only before the first token, so the client never sees a stitched answer); the browser reads the body stream and appends tokens live with a blinking cursor. **Logging:** every turn (user + assistant, tool calls, or error) is persisted to the `strategy_chat` SQLite table (`store.logStrategyChat`; columns session_id/role/content/model/window/elapsed_ms/error_message) and a `strategy.chat.ok` structured log line, for debugging.
-
-- **Advisor tools (Tier 1, read-only).** The chat can call read-only tools mid-conversation so it isn't limited to the cached snapshot. Defined in `server/lib/strategyTools.js` (`STRATEGY_TOOLS` schema + `runStrategyTool` executor), injected into the analyzer by `server.js` (the analyzer stays Meta-agnostic — no fb import). Tools: `get_fresh_insights(level, name?, window?, breakdown?, granularity?)` (live entity/account metrics, optional segment; `level:'ad'` returns per-AD rows + Meta `quality_ranking`/`engagement_rate_ranking`/`conversion_rate_ranking` + frequency in ONE `/{parent}/insights?level=ad` call — the creative-fatigue lens that lets the advisor SOURCE a "this ad is bottom-20%" claim instead of pattern-matching), `get_change_history(name?, limit?)` (recent edits via `/act/activities`), `get_ad_preview(name)` (renders the real creative iframe inline for the operator; resolves the ad id via one `/act_x/ads` read since the snapshot has no ad ids), `get_audiences(scope, name?)` (added 2026-06-04 — `scope:'list'` returns the account's saved Custom + Lookalike audiences via `/act_x/customaudiences` with name/subtype/size/lookalike seed+ratio+country; `scope:'targeting'` reads ONE ad set's `targeting` spec via `/{adset}?fields=targeting` and resolves its `custom_audiences`/`excluded_custom_audiences` ids → names by cross-mapping the catalog, derives an `audience_type` archetype broad|interest|custom/retargeting|lookalike, and surfaces geo/age/genders/interests/`advantage_audience`. **Grounds lookalike/scaling advice** — the advisor confirms a seed/lookalike actually EXISTS before proposing "duplicate the 1% into a 2-3%". Audience size uses `approximate_count_lower_bound`/`upper_bound`, not the retired `approximate_count`, and renders `-1` as "n/a (inactive/new)"), `get_signal(days?)` (added 2026-06-04 — pixel/CAPI health: reads `/act_x/adspixels` then `/{pixel}/stats?aggregation=event_source` for each recently-fired pixel and returns the SERVER-vs-BROWSER event split + `capi_live`. **Kills the old "I can't confirm CAPI / you're blind" hallucination** — the advisor PROVES tracking health instead of guessing. Live: GFM Improved pixel = ~52% server / 48% browser ⇒ CAPI confirmed live), `re_analyze(window?)` (refresh the whole snapshot). The orchestrator is `runChatAgent` in `analyzer.js`: it loops model→tool→model (max 4 iters) using `streamOpenRouterStep`/`callOpenRouterStep`; tool-request steps emit no content so the user only ever sees the FINAL answer stream. Model fallback is allowed only before the first answer token (`contentStarted` flag). Tool results are capped to ~3.5k chars before re-entering context (iframes dropped). The UI renders Cursor-style **collapsible tool cards** (`type:'tool'` SSE events: running/done/failed + summary; click the header to expand the `arguments` + `result` drawer) and inline ad-preview cards; tool turns are persisted to `strategy_chat` (role `tool`). All Tier-1 tools are GETs (safe even with `FB_READONLY`). Windows now include `today`/`yesterday` (Meta date_preset) so "how did yesterday go?" works. Tool selection is **semantic/implicit** — the prompt tells the model to map the operator's words to real entity names + windows from the snapshot (e.g. "the French campaign yesterday vs the rest" → `get_fresh_insights(level:campaign, name:France, window:yesterday)` + `get_fresh_insights(level:account, window:yesterday)`) so the operator never names a tool.
-- **Advisor tools (Tier 2, writes — approval-gated).** `pause_entity`/`resume_entity`/`set_budget`/`set_bid_strategy`/`duplicate_entity` (also in `strategyTools.js`, `WRITE_TOOLS` set). **Bidding (added 2026-06-04, the executable half of the two-governor method):** `set_bid_strategy(level, name, strategy, bid_amount?)` (`strategy ∈ cost_cap|bid_cap|lowest_cost` → Meta `COST_CAP`/`LOWEST_COST_WITH_BID_CAP`/`LOWEST_COST_WITHOUT_CAP`; Min-ROAS deliberately excluded — it's a one-way switch) writes `bid_strategy`(+`bid_amount` cents) on the AD SET (this account is all-ABO, so the cap lives on the ad set; on a CBO campaign it'd be campaign-level). Research-confirmed (Meta Help Center + practitioner consensus 2026): **changing bid strategy ALWAYS resets the learning phase**, so the proposer marks an ACTIVE target `risk:high` and its warning steers to the duplicate path; it also warns when the daily budget is <5× the cap (Meta's conversion-delivery minimum) and is **`sacredHit`-guarded**. `duplicate_entity` now takes optional `cost_cap`/`bid_strategy` → the **two-governor method in ONE approval**: it creates the PAUSED copy AND applies the cap to the COPY (`adManager.duplicate` calls `setBidStrategy(newId,…)` after `/copies`), leaving the live winner uncapped on Lowest Cost — the safe-by-construction way to test a cap (no learning reset on the winner). `adManager.setBidStrategy` has its own ~4-edits/hour/entity rate guard (constant bid edits flag the account) and `ad_actions` audit row (`action:'bid'`). These follow **prepare→commit**: calling the tool in chat NEVER executes — `runStrategyTool` builds an **approval proposal** (`{action, level, entityId, entityName, current, change:{from→to,pct}, risk, reason, warning, args}`) by resolving the entity from the snapshot. `runChatAgent` sees the `approval` on the tool return, emits a `type:'approval'` SSE event via `onApproval`, and **stops the loop** (no result fed back, no further model call) so the operator decides. Failed proposals (entity not found / no-op) are fed back as a normal tool result so the AI can rephrase (denial-as-feedback). The UI shows an **approval card** (expanded by default, destructive=red, shows exact target+id and the current→new diff — never the AI's paraphrase — plus the warning) with **Approve/Reject**. `POST /api/strategy/tool/execute {name,args,decision}` runs the actual write via `executeStrategyWrite` → adManager (re-validates the entity exists = drift guard; logs to `ad_actions`+`strategy_chat`). After a decision the card swaps to a receipt and the client auto-sends a subtle follow-up turn so the AI confirms what happened and what to watch (Cursor-style continue-after-tool). **Gating (defense in depth):** `advisorWritesEnabled()` returns true if **either** `FB_ALLOW_ADVISOR_WRITES=1` (server-level, default OFF) **or** the operator armed writes at runtime from the UI (`app_settings.advisor_writes_armed`, toggled via `POST /api/strategy/arm` and the **"Live actions" switch** inside the Operator-brief panel — so you arm execution without editing env or restarting). Either way **every individual action still needs explicit per-action approval** — the arm flag only decides whether an approval *executes* vs runs a safe **dry-run** (card says "Approve (dry-run)" and "Flip Live actions ON" when disarmed; nothing hits Meta). Execution still also passes adManager's `allowAdManagement` + budget rate guard. **Multi-approval:** when one model turn proposes several actions, the client defers the AI follow-up until **every** card in that message is decided, then sends **one** combined `[Operator decisions on N proposals]` turn (`continueAfterApprovals` in `app.js`) — no premature reply after the first reject. Verified end-to-end in the browser: read cards expand, two approval cards render, rejecting one keeps the AI silent until the second is decided, then a single combined follow-up confirms both outcomes — all as dry-run with zero live mutation.
-- **Advisor memory (Tier A).** Every chat turn is grounded with a compact `OPERATOR BRIEF & MEMORY` system block built by `buildAdvisorMemory()` (`strategyTools.js`) from data we already persist — (1) the **standing operator brief**, now split into **account-wide** settings (`riskTolerance`/`brandVoice`/`notes`) + a **per-campaign goals** array (`{name, goal, targetCpa, targetRoas, sacred, notes}`) in `app_settings.advisor_profile` KV, edited from the "Operator brief & memory" panel in the chat tab (`GET/POST /api/strategy/profile`; the editor offers a campaign-name datalist from the live snapshot). Different campaigns have different objectives, so the memory tells the model to **judge each campaign against ITS OWN goal/targets**, not one global CPA. (2) **recent applied changes** (`ad_actions`, so it won't re-suggest a change just made), and (3) **recent advisor proposals→decisions** (APPLIED/REJECTED/BLOCKED lines from `strategy_chat`, so it won't re-propose a rejected one). The block is injected after the snapshot and the load-bearing rules are **re-stated at the end of the context** (beats instruction centrifugation). The prompt forbids proposing changes to a **sacred** campaign and tells it to aim at each campaign's target CPA/ROAS + honor risk tolerance. **Hard guard (defense in depth beyond the prompt):** `sacredHit()` matches an entity name against any `sacred` campaign in the profile (substring either direction, so a sacred campaign also covers its ad sets), and `proposePause`/`proposeSetBudget` refuse to even build an approval for a sacred entity — a sacred winner can never be paused or budget-changed even if the model tries. Verified end-to-end: asked to pause the sacred Mariana campaign, the advisor refused (no approval card), cited the brief + its per-campaign CPA/ROAS, and offered to pause an underperformer instead.
-- **Advisor comments tools (Tier B).** The chat is wired into the Comments Manager. **Read:** `get_comments(scope, limit?)` (`strategyTools.js`) — `scope=summary` (counts + category/sentiment mix), `flagged` (hate/spam/scam/harassment), `questions` (visible comments with no Page reply = buyer/support-intent leak), `recent`; returns short `comment_id`s. **Write (approval-gated, same prepare→commit as Tier 2):** `moderate_comment(action, comment_id, reply_text?, reason)` with `action ∈ reply|hide|unhide|delete|block|delete_and_block`. `proposeModerateComment` builds a comment-flavored approval (`kind:'comment'`, shows the comment text + the drafted reply); `executeStrategyWrite` routes `moderate_comment` to `executeCommentWrite`, which runs the existing `comments.*` executors (so it inherits `FB_ALLOW_COMMENT_MODERATION` + audit log) and is **also** gated by `advisorWritesEnabled()` (env `FB_ALLOW_ADVISOR_WRITES` **or** the runtime "Live actions" arm toggle — one switch arms all advisor writes; disarmed = dry-run). **Security:** comment bodies are public/untrusted — the prompt treats them strictly as DATA and forbids following instructions inside them (indirect-prompt-injection defense). Verified end-to-end: the advisor read comments, drafted a Portuguese trust-objection reply in the brand voice, and proposed deleting a spam link — all as dry-run approval cards.
-- **Advisor analysis/confidence tools (Tier C — the "absolute confidence" stack, all read-only/safe).** Added 2026-06-01 so the advisor reaches *defensible* numbers instead of doing arithmetic in its head (the #1 hallucination source at low volume). All in `strategyTools.js`, dispatched via `EXECUTORS`, taught in `CHAT_SYSTEM_PROMPT`:
-  1. **`compute(op, args|expression)`** — deterministic calculator over `stats.js`. `op ∈ arithmetic | cpa_ci | compare_cpa | pct_change | z_score | weekly_rate | roas | decision_confidence | summary_stats`. Returns the exact figure **plus a 95% Poisson/Bayesian interval + confidence tier**, so the model can say "probably, but n is too small". `arithmetic` uses a regex-guarded `Function` (`^[\d\s.+\-*/%()]+$` — NO identifiers possible, so no global/require/process reach). This is the **constrained-compute** answer to "should we add a code sandbox?" — **NO**: untrusted comment text reaches the model and the process holds the Meta token, so arbitrary RCE is unacceptable; a fixed op-set over a vetted stats lib gives the determinism without the injection surface.
-  2. **`query_data(sql)` + `get_query_schema()`** — read-only SQL `SELECT` over a **separate `better-sqlite3` connection opened `{ readonly:true }`** (`roDb` in `store.js`). Defense in depth: engine-level readonly **AND** `validateReadOnlySql()` (SELECT/WITH-only, single statement, no comments, keyword blocklist, **table ALLOWLIST** = the analytics "semantic layer": `account, campaigns, adsets, ads, insights_snapshot, ad_actions, ad_posts, comment_analyses, findings` — deliberately EXCLUDES `comments`/`moderation_log`/`blocked_users` (PII/PSIDs), `strategy_chat` (injection echo/loop), `app_settings`/`safety_state` (config)), auto-appended `LIMIT 500`. Lets the model rank/filter/aggregate/join flexibly without a tool-per-query and without ever mutating or reading secrets. Reads the **cached snapshot** (last refresh) — live numbers still go through `get_fresh_insights`.
-  3. **`get_fresh_insights(..., granularity:'daily')`** — folds a day-by-day time series into the existing tool (one row/day: spend/conversions/cpa/roas) so the model can see WHEN a metric moved and feed it to `compute(z_score|compare_cpa)` instead of eyeballing a trend.
-  4. **`measure_incrementality(mode, name?, change_date?)`** — the causal lens (platform ROAS over-credits). `readout` takes a real pause/resume from `ad_actions` (or an explicit `change_date`) and estimates rough incremental daily conversions + iROAS via **difference-in-differences vs the rest-of-account control** (synthetic-control-lite), always with a wide interval + an explicit "directional, not a Conversion Lift study" caveat. `design` returns a small-budget geo/time holdout plan (this account already runs ~one campaign per geo = a natural geo split). Suggest/read only.
-  5. **`record_finding(title, detail?, entity?, watch_metric?, decide_by?)` + `findings` table** — durable advisor memory (local only, **no approval needed**, never touches Meta). Open findings (`status IN open|watching`) are surfaced back in `buildAdvisorMemory()` as an `OPEN FINDINGS / WATCH-ITEMS` block, closing the **stack-evidence-over-days** loop that low volume requires (one pull is noise; confidence accrues across days). Store helpers: `addFinding`/`getFindings`/`setFindingStatus`.
-  - **Confidence discipline** is now a load-bearing prompt rule: never present a recommendation-backing number without grounding it (compute/query/fresh-pull); kill/scale needs **medium+** tier (≈≥15 conv + ≥3-day persistence); below that → "watch", offer `record_finding`. `maxIters` bumped 4→6 for compute→query→measure chains. Verified end-to-end offline (28 assertions): math correct, RCE/writes/non-allowlisted-table/multi-statement/comment/PII-table all rejected, findings persist + surface in memory, server boots clean.
-- **Advisor loop quality (Tier D).** The interactive chat routes to a **stronger synthesis model** (`OPENROUTER_SYNTHESIS_MODEL`, default `google/gemini-3-flash-preview`) with the cheap model as fallback (`chatModelChain` in `analyzer.js`); bulk comment classification stays on the cheap model. A final system nudge enforces a **validate/cite** pass ("verify every number against the snapshot or a tool result, else say unknown") and asks the model to end with a `[FOLLOWUPS] a | b | c` line, which the client (`finalizeAssistant`) strips from the answer and renders as **clickable follow-up chips** (`useFollowup`). Tool sprawl is deliberately capped (18 tools total: 12 read/analysis + 6 write incl. comments) per the research that selection accuracy collapses past ~15-20 tools — comments are one action-param tool, not five, the analysis tools are op-dispatched (compute carries 9 ops; query_data is one SQL tool, not a tool-per-query), creative-fatigue is a `level` of `get_fresh_insights` not a new tool, and the two-governor cap is folded into `duplicate_entity` rather than a separate "duplicate + cap" tool. `set_bid_strategy` is the one net-new write — justified because it's the executable half of the account's flagship strategy (high-frequency, not niche). **Live tool UX (Cursor-style):** `streamOpenRouterStep` fires an `onToolStart` callback the moment a tool name first appears in the streaming delta (not after the whole tool-decision turn completes), so the card shows a pulsing "Reading {scope}…" the instant the model commits to a call, then fills in the result — instead of a dead spinner that dumps every card at once.
-- **Daily Briefing = confidence over action** (`BRIEFING_SYSTEM_PROMPT`): the golden rule is that an item only becomes a `confident_action` when the decision digest backs it with a `high`/`medium` tier (sample size + persistence + DoW adjustment). Single-day swings go to `do_not_act` with their z-score; real-but-unproven signals go to `watch` with what to wait for. 100% certainty is impossible at this volume — the system is honest about it rather than fabricating confidence. The briefing also emits `growth_moves[]` ({title, impact, why, effort}) — the proactive **grow-revenue** counterpart to the defensive `confident_actions`, fed by the digest's `growth` block and the playbook's GROWTH section.
-- **Growth playbook = the AI's expansion brain** (GROWTH section appended to `COMMUNITY_PLAYBOOK`): for a 1-campaign-per-geo donation account, raising revenue is incrementality-ranked — prospecting (donor-seed lookalikes, then cause/medical interests) drives real net-new money (55-75% incremental) while retargeting is over-credited (15-35%, kept small + surgical: checkout/cart abandoners only, <20% budget, judged on 1-day-click). CAPI is the foundational unlock (recovers lost conversions, sharpens seeds, enables Value Optimization). Value Optimization fits variable donation sizes but is gated on CAPI + ~50-100 purchases/wk (checked against the live weekly donation count, not a hardcoded number). Bid/cost caps are **volume-gated** (a cap needs an ACTIVE, learning-complete ad set at ~50+ conv/wk to feed it — NOT a total-spend floor); when an ad set qualifies, `buildGrowth` surfaces a "Cost cap on the scaled winner(s)" lever (two-governor / inflated-budget method on a duplicate), otherwise the lever stays `avoid`. All these gates read live `adsets`/`totals` — no account metrics are hardcoded in the playbook.
-
-### Comments Manager API (`/api/cm/*`)
-
-Full-screen manager that spans **all** active ad posts (not a per-ad drawer). Opened from the header button or an ad row.
-
-| Route | Method | Effect | Hits Meta? |
-|---|---|---|---|
-| `/api/cm/state` | GET | Page catalog + summary counts + rules + moderation/analyzer flags | No |
-| `/api/cm/posts` | GET | Post catalog (per-post counts: total/hidden/suggest_delete/unanalyzed/needs_reply) | No |
-| `/api/cm/inbox` | GET | Unified inbox; `filter`, `sort`, `post_id`, `min_sev`, `q`, `limit`, `offset` | No |
-| `/api/cm/sync` | POST | **Full sync.** Discover posts from ads → **batched field-expanded** fetch (post meta + comments in one call per post, ≤`CM_BATCH_SIZE` posts per Graph batch) → AI review → apply auto-hide rules. Only posts owned by `FB_TARGET_PAGE_ID` are fetched; foreign-page posts are skipped + pruned. | YES (bounded, few top-level calls) |
-| `/api/cm/sync-comments` | POST | **Comments-only sync.** Re-pulls comments for posts ALREADY in the catalog (skips discovery + post-meta refresh), reconciles deletions, then AI review + auto-hide rules. Lighter/faster routine "any new comments?" path. Live: 11 posts / 293 comments / 2 batch calls. | YES (bounded) |
-| `/api/cm/discover` | POST | Rebuild post catalog (meta only, batched) from the ads table | YES |
-| `/api/cm/posts/:id/refresh` | POST | Re-pull one post's comments (field-expanded + paginated) | YES |
-| `/api/cm/posts/:id/analyze` | POST | AI review one post's comments (`{force}`) | No (LLM direct) |
-| `/api/cm/analyze` | POST | AI review all not-yet-analyzed comments | No (LLM direct) |
-| `/api/cm/comments/:id/{hide\|unhide\|like\|unlike\|reply}` | POST | Per-comment action; gated by `FB_ALLOW_COMMENT_MODERATION` | YES (when enabled) |
-| `/api/cm/comments/:id` | DELETE | Delete a comment; gated | YES (when enabled) |
-| `/api/cm/comments/:id/block` | POST | Block author only (keeps comment); 422 if no PSID; gated | YES (when enabled) |
-| `/api/cm/comments/:id/delete-and-block` | POST | Delete + block author (PSID); falls back to delete-only if no PSID; gated | YES (when enabled) |
-| `/api/cm/comments/:id/suggest-reply` | POST | LLM-suggested reply (no Meta write) | No (LLM direct) |
-| `/api/cm/bulk` | POST | `{action, ids[]}` (`hide\|unhide\|like\|unlike\|delete\|block\|delete-and-block`) — sequential, paced, stops early on safety block; gated | YES (when enabled) |
-| `/api/cm/rules` `…/:id` `…/preview` `…/apply` | GET/POST/PATCH/DELETE | Auto-hide rules CRUD, dry-run preview, apply-now (hide matches) | apply = YES (gated) |
-| `/api/cm/audit` | GET | Append-only moderation log (incl. blocked attempts) | No |
-| `/api/cm/blocked` `…/:psid/unblock` | GET/POST | Blocked-users list + unblock; gated | unblock = YES |
-| `/api/cm/new-since` | POST | `{lastVisits}` → per-post new-comment counts since last visit | No |
-
-### Comment moderation discipline
-
-- Page-content edges use `tokenKind: 'page'` (minted token); ad/insights edges use the system-user token. LLM calls bypass Meta entirely.
-- **All destructive/write comment actions** (hide/unhide/delete/like/reply/block/unblock) go through `fb.moderate`, gated by `FB_ALLOW_COMMENT_MODERATION` (default `0`), **independent of `FB_READONLY`**. When the gate is off the server returns HTTP 423 and the attempt is still written to `moderation_log` (auditable). Deletes use `DELETE /{comment_id}` (treat error `100`/"already gone" as success); hide uses `POST /{comment_id}` with `is_hidden`.
-- **Suggest-only auto-delete (user decision, 2026-05-28).** The AI never deletes silently. `recommended_action: 'delete'` only *flags* a comment (red badge / "AI: suggest delete" filter); a human confirms via single action or bulk approval. Auto-mod **rules** may auto-**hide** on sync, never auto-delete.
-- **Thread-aware AI.** `analyzer.js` passes parent comment + replies so a scam/fake/AI accusation that already has strong defending replies is downgraded from `delete` to `review` (preserve social proof). Categories: hate, harassment, threat, scam_accusation, ai_accusation, fake_accusation, spam, negative_criticism, safe. Severity 0–10. Always returns an English translation.
-- **Commenter names/PSIDs require an app feature, not code.** `from{name,id}` is `null` for ordinary users unless the app is approved (App Review, Advanced access) for `pages_read_user_content` + the **"Business Asset User Profile Access"** feature (+ business verification + published privacy/ToS). Other Pages and the Page's own replies always resolve (empirically: in our data only 1/294 comments had a name, and it was a Page). Comment **IDs always return** with a page token, so hide/delete/reply work regardless. Blocking needs a **PSID** (the `from.id`), so it is gated by the same feature — the UI shows a "no id" badge and hides the Block button when absent; `delete-and-block` degrades to delete-only.
-- **READS are batched, WRITES are not (deliberate).** `commentSync` fetches post meta + the first comment page in ONE field-expanded call per post, bundled into Graph batches (top-level **page** token via `fb.batch(ops, key, { tokenKind: 'page' })`), then paginates remaining pages in further batches. This collapses a full sync from ~80+ top-level calls to a handful. Moderation **writes stay sequential + 750ms-paced + `MODERATE`-gated** — batching writes would remove the anti-suspension pacing and bypass the safety gate, so we never do it. Reconcile (mark-missing-as-deleted) only runs when a post's full stream was fetched (no remaining `next`), so capped pagination never wrongly deletes.
-- Sync is bounded by `CM_MAX_POSTS_PER_SYNC` and `CM_MAX_COMMENT_PAGES_PER_POST`; AI by `ANALYSIS_BATCH_SIZE`/`ANALYSIS_BATCH_CONCURRENCY`/`ANALYSIS_MAX_COMMENTS_PER_RUN`. Heuristic spam flagging (link/contact/spam-keyword) is still computed at fetch and stored in `comments.flag_reasons` as a cheap pre-AI signal.
-
-## Forbidden patterns
-
-- `requests.get('https://graph.facebook.com/...')` without `proxies=` — **NEVER**.
-- `os.environ.get('HTTP_PROXY')` — we use explicit config, not OS env.
-- Sequential `for id in ids: GET /id` when one batched or field-expanded call would do.
-- Refreshing a list every time the user opens the UI; use the cache.
-- Logging tokens, full user comment text in errors, or PII.
-- Sending many ad-set writes for the same campaign in one batch (Meta rejects the whole batch).
+Always verify on localhost before pushing: a push to GitHub auto-deploys to Railway. On Railway, mount a volume and set `DATA_DIR` to it, or the database resets on every deploy. The app has no login (operator's choice), so keep the URL private.
