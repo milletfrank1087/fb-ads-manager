@@ -5,6 +5,7 @@ import { log } from './logger.js';
 import { safety } from './safety.js';
 import { COMMENT_FIELDS, normalizeComments, hide, remove } from './comments.js';
 import { analyzerEnabled, analyzePost, analyzeBatch, analyzeComment, COMMENT_CATEGORIES } from './analyzer.js';
+import { discover } from './posts.js';
 
 // ---------- settings & policy ----------
 
@@ -16,9 +17,9 @@ export const DEFAULT_POLICY = Object.fromEntries(COMMENT_CATEGORIES.map((c) => [
   : { action: 'off', minSeverity: 4, requireAiDelete: true }]));
 
 export const DEFAULT_SETTINGS = {
-  enabled: false,
+  enabled: true,
   dryRun: false,
-  intervalMinutes: 60,
+  intervalMinutes: 15,
   maxActionsPerRun: 20,
   maxAnalysesPerRun: 500,
   policy: DEFAULT_POLICY,
@@ -235,6 +236,10 @@ export async function runNow(trigger = 'manual', { postIds = null, includeBacklo
     const runId = store.startRun(trigger, settings.dryRun);
     const stats = { meta_calls: 0, deleted: 0, hidden: 0, failed: 0, skipped: 0, errors: [] };
     let posts = store.listTrackedPosts();
+    if (!posts.length && !postIds) {
+      await discover().catch((err) => log.warn('automod.discover.failed', { error: String(err) }));
+      posts = store.listTrackedPosts();
+    }
     if (postIds) posts = posts.filter((p) => postIds.includes(p.id));
     try {
       if (safety.isKillSwitchActive()) throw new Error('Kill switch is on.');
@@ -298,6 +303,12 @@ export function schedulerState() {
 export function startScheduler() {
   const orphans = store.failOrphanRuns();
   if (orphans) log.warn('automod.orphan_runs', { count: orphans });
-  schedule();
+  if (!store.listTrackedPosts().length) {
+    discover()
+      .then(() => { schedule(); })
+      .catch((err) => { log.warn('automod.boot_discover.failed', { error: String(err) }); schedule(); });
+  } else {
+    schedule();
+  }
   log.info('automod.scheduler.start', schedulerState());
 }

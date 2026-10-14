@@ -20,7 +20,7 @@ function postRow(p, source, extra = {}) {
   };
 }
 
-const AD_FIELDS = 'name,effective_status,campaign{name},creative{effective_object_story_id}';
+const AD_FIELDS = 'id,name,effective_status,campaign{name},creative{effective_object_story_id,object_story_id}';
 const AD_FILTER = JSON.stringify([{ field: 'effective_status', operator: 'IN', value: LIVE_AD_STATUSES }]);
 
 // Every ad account the system-user token can see (one Page is often advertised from several
@@ -36,10 +36,26 @@ async function adAccounts() {
 
 // Ads (all accounts, one batch) → the Page posts they promote (incl. dark posts), grouped so one
 // post lists all its ads. An ad only counts as running if its account is active (status 1).
+// Any ad creative that is currently ACTIVE or delivered impressions/spend in the last 14 days
+// is automatically tracked when first discovered.
 async function discoverAdPosts() {
   const acc = await adAccounts();
   if (!acc.ok) return acc;
   if (!acc.accounts.length) return { ok: true, count: 0, accounts: 0 };
+
+  const active14dAdIds = new Set();
+  const insRes = await fb.batch(
+    acc.accounts.map((a, i) => ({ name: `i${i}`, relative_url: `${a.id}/insights?level=ad&date_preset=last_14d&fields=ad_id,impressions,spend&limit=500` })),
+    'GET:/act/insights_14d',
+  );
+  if (insRes.ok) {
+    for (const [i] of acc.accounts.entries()) {
+      const rows = insRes.parsed[`i${i}`]?.body?.data || [];
+      for (const r of rows) {
+        if (Number(r.impressions || 0) > 0 || Number(r.spend || 0) > 0) active14dAdIds.add(r.ad_id);
+      }
+    }
+  }
 
   const ads = [];
   const res = await fb.batch(
@@ -64,17 +80,20 @@ async function discoverAdPosts() {
 
   const byPost = new Map();
   for (const ad of ads) {
-    const postId = ad.creative?.effective_object_story_id;
+    const postId = ad.creative?.effective_object_story_id || ad.creative?.object_story_id;
     if (!postId || !postId.startsWith(pagePrefix())) continue;
-    const g = byPost.get(postId) || { ads: new Set(), campaigns: new Set(), active: false };
+    const g = byPost.get(postId) || { ads: new Set(), campaigns: new Set(), active: false, active14d: false };
     g.ads.add(ad.name);
     if (ad.campaign?.name) g.campaigns.add(ad.campaign.name);
-    if (ad.effective_status === 'ACTIVE' && ad.accountActive) g.active = true;
+    const isNowActive = ad.effective_status === 'ACTIVE' && ad.accountActive;
+    if (isNowActive) g.active = true;
+    if (isNowActive || active14dAdIds.has(ad.id)) g.active14d = true;
     byPost.set(postId, g);
   }
 
   const ids = [...byPost.keys()];
   const seen = new Set(ids);
+  const existingIds = new Set(store.listPosts().map((p) => p.id));
   for (const p of store.listPosts()) {
     if (p.source === 'ad' && !seen.has(p.id)) store.db.prepare("UPDATE posts SET ad_status = 'ENDED' WHERE id = ?").run(p.id);
   }
@@ -84,16 +103,25 @@ async function discoverAdPosts() {
     { tokenKind: 'page' },
   );
   if (!meta.ok) return { ok: false, message: meta.message || 'post read failed' };
+  const autoTrackStmt = store.db.prepare('UPDATE posts SET tracked = 1, tracked_at = COALESCE(tracked_at, ?) WHERE id = ? AND tracked = 0');
+  const nowIso = new Date().toISOString();
+  const hadNoTracked = store.listTrackedPosts().length === 0;
+  let autoTracked = 0;
   ids.forEach((id, i) => {
     const g = byPost.get(id);
     const body = meta.parsed[`p${i}`]?.ok ? meta.parsed[`p${i}`].body : { id };
+    const isNew = !existingIds.has(id);
     store.upsertPost(postRow({ ...body, id }, 'ad', {
       ad_names: [...g.ads].join(' · '),
       campaign_names: [...g.campaigns].join(' · '),
       ad_status: g.active ? 'ACTIVE' : 'PAUSED',
     }));
+    if (g.active14d && (isNew || hadNoTracked)) {
+      autoTrackStmt.run(nowIso, id);
+      autoTracked += 1;
+    }
   });
-  return { ok: true, count: ids.length };
+  return { ok: true, count: ids.length, autoTracked };
 }
 
 async function discoverPagePosts() {

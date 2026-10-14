@@ -160,7 +160,7 @@ const upsertPostStmt = db.prepare(`
 INSERT INTO posts (id, source, message, permalink_url, picture_url, created_time, ad_names, campaign_names, ad_status)
 VALUES (@id, @source, @message, @permalink_url, @picture_url, @created_time, @ad_names, @campaign_names, @ad_status)
 ON CONFLICT(id) DO UPDATE SET
-  source = CASE WHEN posts.source = 'manual' THEN excluded.source ELSE posts.source END,
+  source = CASE WHEN excluded.source = 'ad' THEN 'ad' WHEN posts.source = 'manual' THEN excluded.source ELSE posts.source END,
   message = COALESCE(excluded.message, posts.message),
   permalink_url = COALESCE(excluded.permalink_url, posts.permalink_url),
   picture_url = COALESCE(excluded.picture_url, posts.picture_url),
