@@ -15,16 +15,56 @@ export const VALID_DATE_PRESETS = new Set([
   'today', 'yesterday', 'last_7d', 'last_14d', 'last_28d', 'last_30d', 'last_90d', 'this_month', 'last_month',
 ]);
 
-// Minimum age before a refresh hits Meta again; within it the cached result is reused.
-const REUSE_MS = { today: 5 * 60_000, yesterday: 20 * 60_000, last_7d: 30 * 60_000, last_90d: 3 * 60 * 60_000 };
-const DEFAULT_REUSE_MS = 60 * 60_000;
+// Minimum age before a background refresh hits Meta again; manual { force: true } bypasses this.
+const REUSE_MS = { today: 60_000, yesterday: 10 * 60_000, last_7d: 15 * 60_000, last_90d: 60 * 60_000 };
+const DEFAULT_REUSE_MS = 15 * 60_000;
 
-const CAMPAIGN_FIELDS = 'id,name,account_id,status,effective_status,objective,start_time,stop_time,created_time,updated_time';
+const CAMPAIGN_FIELDS = 'id,name,account_id,status,effective_status,objective,start_time,stop_time,created_time,updated_time,adsets.limit(3){promoted_object},ads.limit(5){creative{object_story_spec,asset_feed_spec}}';
 const INSIGHTS_FIELDS = 'campaign_id,spend,reach,impressions,cpm,inline_link_clicks,cost_per_inline_link_click,actions,action_values,cost_per_action_type,purchase_roas';
 const HOURLY_FIELDS = 'campaign_id,spend,impressions,inline_link_clicks,actions,action_values';
 const HOURLY_BREAKDOWN = 'hourly_stats_aggregated_by_advertiser_time_zone';
 const MAX_CAMPAIGN_PAGES = 5;
 const MAX_INSIGHT_PAGES = 20;
+
+function extractCampaignMeta(camp) {
+  const pixelId = (camp.adsets?.data || [])
+    .map((a) => a?.promoted_object?.pixel_id)
+    .find(Boolean) || null;
+  let destinationUrl = null;
+  for (const ad of camp.ads?.data || []) {
+    const spec = ad?.creative?.object_story_spec || {};
+    const af = ad?.creative?.asset_feed_spec || {};
+    const link =
+      spec.video_data?.call_to_action?.value?.link ||
+      spec.link_data?.link ||
+      af.link_urls?.[0]?.website_url ||
+      null;
+    if (link) {
+      destinationUrl = link;
+      break;
+    }
+  }
+  let destinationHost = null;
+  let linkUtmCampaign = null;
+  if (destinationUrl) {
+    try {
+      const u = new URL(destinationUrl);
+      destinationHost = u.hostname.toLowerCase();
+      const uc = u.searchParams.get('utm_campaign');
+      if (uc && !uc.includes('{{')) linkUtmCampaign = uc.trim();
+    } catch {
+      // ignore malformed URL
+    }
+  }
+  const { adsets, ads, ...rest } = camp;
+  return {
+    ...rest,
+    pixel_id: pixelId ? String(pixelId) : null,
+    destination_url: destinationUrl,
+    destination_host: destinationHost,
+    link_utm_campaign: linkUtmCampaign,
+  };
+}
 
 const cache = new Map(); // `${accountId}|${preset}` -> { rows, campaigns, fetchedAt, range }
 const inFlight = new Map(); // preset -> Promise
@@ -206,7 +246,7 @@ async function fetchPreset(preset) {
     if (c.body?.paging?.next) {
       campaigns = campaigns.concat(await remainingPages(`/${acct}/campaigns`, { fields: CAMPAIGN_FIELDS, limit: 200 }, c.body.paging.cursors?.after, 'GET:/ads-insights/campaigns', MAX_CAMPAIGN_PAGES));
     }
-    campaigns = campaigns.map((camp) => ({ ...camp, account_id: acct })); // Graph omits the act_ prefix; the campaign app stores it
+    campaigns = campaigns.map((camp) => ({ ...extractCampaignMeta(camp), account_id: acct })); // Graph omits the act_ prefix; the campaign app stores it
 
     let insightRows = ins.body?.data || [];
     if (ins.body?.paging?.next) {
