@@ -237,10 +237,10 @@ function currentEntry(acct, preset, win) {
 }
 
 // Refreshes every allowed account for a preset, unless the last fetch is younger than the reuse window.
-export async function refresh(preset) {
+export async function refresh(preset, { force = false } = {}) {
   const win = athensWindow(preset);
   const newest = Math.max(0, ...config.adAccountIds.map((a) => Date.parse(currentEntry(a, preset, win)?.fetchedAt || 0)));
-  if (Date.now() - newest < (REUSE_MS[preset] ?? DEFAULT_REUSE_MS)) return { ok: true, cached: true, fetchedAt: new Date(newest).toISOString() };
+  if (!force && Date.now() - newest < (REUSE_MS[preset] ?? DEFAULT_REUSE_MS)) return { ok: true, cached: true, fetchedAt: new Date(newest).toISOString() };
   if (!inFlight.has(preset)) {
     inFlight.set(preset, fetchPreset(preset).finally(() => inFlight.delete(preset)));
   }

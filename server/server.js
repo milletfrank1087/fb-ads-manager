@@ -179,7 +179,7 @@ app.get('/api/dashboard', ah(async (req, res) => {
 app.post('/api/refresh', ah(async (req, res) => {
   const p = adsParams(req.body);
   if (p.error) return res.status(400).json({ ok: false, ...p });
-  const r = await adInsights.refresh(p.preset);
+  const r = await adInsights.refresh(p.preset, { force: !!req.body?.force });
   res.status(r.ok ? 200 : r.error === 'daily_cap_reached' || r.error === 'kill_switch_on' ? 423 : 502).json(r);
 }));
 
