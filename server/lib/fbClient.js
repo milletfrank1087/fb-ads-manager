@@ -86,7 +86,7 @@ async function request(method, path, { params, data, endpoint, kind = 'READ', to
   const tok = await resolveToken(tokenKind);
   if (!tok.ok) return { ok: false, error: tok.error, message: tok.message };
 
-  const auth = { access_token: tok.token, appsecret_proof: appSecretProof(tok.token) };
+  const auth = { access_token: tok.token, ...(config.appSecret ? { appsecret_proof: appSecretProof(tok.token) } : {}) };
   const req = { method, url: path.startsWith('/') ? path : `/${path}` };
   if (method === 'GET' || method === 'DELETE') {
     req.params = { ...auth, ...(params || {}) };

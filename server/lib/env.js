@@ -46,7 +46,10 @@ const graphVersion = opt('GRAPH_API_VERSION', 'v25.0');
 
 export const config = Object.freeze({
   systemToken: req('FB_SYSTEM_USER_ACCESS_TOKEN'),
-  appSecret: req('FB_APP_SECRET'),
+  // Optional: when set, Graph calls are signed with appsecret_proof. When empty, calls rely
+  // on the access token alone (same mode the Meta Ads MCP uses). This lets the service run
+  // on a system-user token whose app secret is not available to the operator.
+  appSecret: opt('FB_APP_SECRET'),
   targetPageId: req('FB_TARGET_PAGE_ID'),
   timezone: opt('FB_PRIMARY_ACCOUNT_TIMEZONE', 'Europe/Kiev'),
 
