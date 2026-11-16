@@ -80,7 +80,7 @@ const dateInTz = (ms, tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, ye
 const addDays = (ymd, n) => new Date(Date.parse(`${ymd}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
 
 // Offset of `tz` from UTC in minutes at instant `ms` (+180 for Athens in summer).
-function offsetMinutes(tz, ms) {
+export function offsetMinutes(tz, ms) {
   const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' })
     .formatToParts(new Date(ms)).find((p) => p.type === 'timeZoneName')?.value || 'GMT';
   const m = /GMT([+-])(\d{2}):?(\d{2})?/.exec(name);
@@ -101,14 +101,14 @@ export function athensWindow(preset, now = Date.now()) {
 }
 
 // True when the account's day boundaries equal Athens' across the window (e.g. Europe/Kyiv).
-function sameDaysAsAthens(tz, win, now = Date.now()) {
+export function sameDaysAsAthens(tz, win, now = Date.now()) {
   if (!tz) return false;
   return [Date.parse(`${win.since}T12:00:00Z`), Date.parse(`${win.until}T12:00:00Z`), now]
     .every((ms) => offsetMinutes(tz, ms) === offsetMinutes(REPORT_TZ, ms));
 }
 
 // Athens date of an hourly row: date_start + "23:00:00 - 23:59:59" are in the account's timezone.
-function athensDateOfHour(row, tz) {
+export function athensDateOfHour(row, tz) {
   const hour = Number(String(row[HOURLY_BREAKDOWN] || '0').slice(0, 2));
   const localAsUtc = Date.parse(`${row.date_start}T00:00:00Z`) + hour * 3_600_000;
   return dateInTz(localAsUtc - offsetMinutes(tz, localAsUtc) * 60_000, REPORT_TZ);
@@ -157,34 +157,55 @@ function normalizeInsight(r, fetchedAt) {
 }
 
 // Sums hourly rows per campaign into one row shaped like a plain insights row.
-function sumHourlyRows(rows, tz, win) {
+// Also returns per-day aggregates: `daily` bucketed into Athens days (for the cockpit's daily
+// profit) and `metaDaily` in the account's own days (for Meta-vs-Athens reconciliation).
+export function sumHourlyRows(rows, tz, win) {
   const acc = new Map();
+  const dailyAcc = new Map();
+  const metaAcc = new Map();
+  const addTo = (map, key, date, campaignId, r) => {
+    const a = map.get(key) || { campaign_id: campaignId, date, spend: 0, impressions: 0, inline_link_clicks: 0, actions: [], action_values: [] };
+    a.spend += Number(r.spend) || 0;
+    a.impressions += Number(r.impressions) || 0;
+    a.inline_link_clicks += Number(r.inline_link_clicks) || 0;
+    for (const k of ['actions', 'action_values']) {
+      for (const x of r[k] || []) {
+        const hit = a[k].find((y) => y.action_type === x.action_type);
+        if (hit) hit.value = String(Number(hit.value) + Number(x.value || 0));
+        else a[k].push({ action_type: x.action_type, value: String(x.value) });
+      }
+    }
+    map.set(key, a);
+    return a;
+  };
   for (const r of rows) {
     const day = tz ? athensDateOfHour(r, tz) : r.date_start;
     if (day < win.since || day > win.until) continue;
     const id = String(r.campaign_id);
-    const a = acc.get(id) || { campaign_id: id, spend: 0, impressions: 0, inline_link_clicks: 0, actions: [], action_values: [] };
-    a.spend += Number(r.spend) || 0;
-    a.impressions += Number(r.impressions) || 0;
-    a.inline_link_clicks += Number(r.inline_link_clicks) || 0;
-    for (const key of ['actions', 'action_values']) {
-      for (const x of r[key] || []) {
-        const hit = a[key].find((y) => y.action_type === x.action_type);
-        if (hit) hit.value = String(Number(hit.value) + Number(x.value || 0));
-        else a[key].push({ action_type: x.action_type, value: String(x.value) });
-      }
-    }
-    acc.set(id, a);
+    addTo(acc, id, day, id, r);
+    addTo(dailyAcc, `${id}|${day}`, day, id, r);
+    addTo(metaAcc, `${id}|${r.date_start}`, r.date_start, id, r);
   }
-  return [...acc.values()].map((a) => ({
+  const shape = (a) => ({
     ...a,
     cpm: a.impressions > 0 ? (a.spend / a.impressions) * 1000 : null,
     cost_per_inline_link_click: a.inline_link_clicks > 0 ? a.spend / a.inline_link_clicks : null,
     reach: null, // reach does not add up across hours
-  }));
+  });
+  return {
+    totals: [...acc.values()].map(shape),
+    daily: [...dailyAcc.values()].map(shape),
+    metaDaily: [...metaAcc.values()].map(shape),
+  };
 }
 
 // ---------- Graph requests ----------
+
+// Meta's hourly breakdown with time_increment=1 over a multi-day range only publishes through
+// accountToday-2 (verified 2026-11-16: ranges ending Nov 15/16 returned nothing past Nov 14, while
+// single-day queries for Nov 15 and Nov 16 were complete). So hourly accounts are fetched as:
+// a settled multi-day range through accountToday-2, plus one single-day query per recent day.
+export const SETTLED_LAG_DAYS = 2;
 
 // Plain totals when the account's days match Athens; otherwise hourly rows over a range padded by
 // a day on each side (clamped to the account's today) so re-bucketing sees every edge hour.
@@ -195,16 +216,21 @@ function insightsRequest(acct, win) {
   const since = hourly ? addDays(win.since, -1) : win.since;
   const wanted = hourly ? addDays(win.until, 1) : win.until;
   const until = wanted > accountToday ? accountToday : wanted;
+  const settledUntil = hourly ? (until > addDays(accountToday, -SETTLED_LAG_DAYS) ? addDays(accountToday, -SETTLED_LAG_DAYS) : until) : until;
+  const recentDays = [];
+  if (hourly) {
+    for (let d = addDays(settledUntil, 1); d <= until; d = addDays(d, 1)) recentDays.push(d);
+  }
   const params = {
     level: 'campaign',
-    time_range: JSON.stringify({ since, until }),
+    time_range: JSON.stringify({ since, until: hourly ? settledUntil : until }),
     fields: hourly ? HOURLY_FIELDS : INSIGHTS_FIELDS,
     limit: 500,
     // time_increment=1 keeps one row per day+hour; without it Meta merges each hour-of-day across the range.
     ...(hourly ? { breakdowns: HOURLY_BREAKDOWN, time_increment: 1 } : {}),
   };
   const qs = Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
-  return { hourly, tz, path: `/${acct}/insights`, params, relative: `${acct}/insights?${qs}` };
+  return { hourly, tz, path: `/${acct}/insights`, params, relative: `${acct}/insights?${qs}`, settledUntil, recentDays, accountToday };
 }
 
 async function remainingPages(path, params, after, endpoint, max) {
@@ -252,13 +278,39 @@ async function fetchPreset(preset) {
     if (ins.body?.paging?.next) {
       insightRows = insightRows.concat(await remainingPages(reqs[i].path, reqs[i].params, ins.body.paging.cursors?.after, 'GET:/ads-insights/insights', MAX_INSIGHT_PAGES));
     }
-    if (reqs[i].hourly) insightRows = sumHourlyRows(insightRows, tzName || reqs[i].tz, win);
+    let dailyRows = [];
+    let metaDailyRows = [];
+    if (reqs[i].hourly) {
+      // Recent account days are missing from multi-day hourly ranges (see SETTLED_LAG_DAYS):
+      // fetch each one as a single-day query, which Meta serves current. The account's timezone
+      // is known by now (learned in this same batch), so recompute the recent set from it.
+      const tzNow = tzName || reqs[i].tz;
+      const accountToday = tzNow ? dateInTz(Date.now(), tzNow) : reqs[i].accountToday;
+      const settledUntil = addDays(accountToday, -SETTLED_LAG_DAYS);
+      insightRows = insightRows.filter((r) => r.date_start <= settledUntil);
+      const wantedUntil = addDays(win.until, 1) > accountToday ? accountToday : addDays(win.until, 1);
+      for (let day = addDays(settledUntil, 1); day <= wantedUntil; day = addDays(day, 1)) {
+        if (day < addDays(win.since, -1)) continue;
+        const dayParams = { ...reqs[i].params, time_range: JSON.stringify({ since: day, until: day }) };
+        const first = await fb.get(reqs[i].path, dayParams, 'GET:/ads-insights/insights-recent', { budget: 'ads' });
+        if (!first.ok) { log.warn('ads.insights.recent_failed', { acct, day }); continue; }
+        let dayRows = first.body?.data || [];
+        if (first.body?.paging?.next) {
+          dayRows = dayRows.concat(await remainingPages(reqs[i].path, dayParams, first.body.paging.cursors?.after, 'GET:/ads-insights/insights-recent', MAX_INSIGHT_PAGES));
+        }
+        insightRows = insightRows.concat(dayRows);
+      }
+      const summed = sumHourlyRows(insightRows, tzNow, win);
+      insightRows = summed.totals;
+      dailyRows = summed.daily;
+      metaDailyRows = summed.metaDaily;
+    }
 
     const byCampaign = new Map(insightRows.map((r) => [String(r.campaign_id), normalizeInsight(r, fetchedAt)]));
     const rows = campaigns
       .map((camp) => ({ ...camp, campaign_id: camp.id, ...(byCampaign.get(String(camp.id)) || { spend: null, insights_fetched_at: null }) }))
       .sort((a, b) => (b.spend ?? -1) - (a.spend ?? -1));
-    cache.set(`${acct}|${preset}`, { rows, campaigns, fetchedAt, range: win });
+    cache.set(`${acct}|${preset}`, { rows, campaigns, fetchedAt, range: win, dailyRows, metaDailyRows });
   }
   if (failed.length) log.warn('ads.insights.partial', { preset, failed });
   log.info('ads.insights.refreshed', {
@@ -301,9 +353,11 @@ export async function dashboard(accountId, preset) {
     datePreset: preset,
     level: 'campaign',
     accountId,
-    account: { id: accountId },
+    account: { id: accountId, timezone_name: accountTz.get(accountId) || null },
     range: { since: hit.range.since, until: hit.range.until, timezone: REPORT_TZ },
     rows: hit.rows,
+    dailyRows: hit.dailyRows || [],
+    metaDailyRows: hit.metaDailyRows || [],
     campaigns: hit.campaigns,
     lastInsightsFetchedAt: hit.fetchedAt,
   };
