@@ -209,14 +209,19 @@ export const SETTLED_LAG_DAYS = 2;
 
 // Plain totals when the account's days match Athens; otherwise hourly rows over a range padded by
 // a day on each side (clamped to the account's today) so re-bucketing sees every edge hour.
-function insightsRequest(acct, win) {
+export function insightsRequest(acct, win) {
   const tz = accountTz.get(acct);
   const hourly = !sameDaysAsAthens(tz, win);
   const accountToday = tz ? dateInTz(Date.now(), tz) : win.until;
   const since = hourly ? addDays(win.since, -1) : win.since;
   const wanted = hourly ? addDays(win.until, 1) : win.until;
   const until = wanted > accountToday ? accountToday : wanted;
-  const settledUntil = hourly ? (until > addDays(accountToday, -SETTLED_LAG_DAYS) ? addDays(accountToday, -SETTLED_LAG_DAYS) : until) : until;
+  const settledRaw = hourly ? (until > addDays(accountToday, -SETTLED_LAG_DAYS) ? addDays(accountToday, -SETTLED_LAG_DAYS) : until) : until;
+  // Short windows (today/yesterday): the padded `since` can fall after the settled
+  // cutoff, which would invert the range and make Meta reject the request. Clamp to
+  // a single day; fetchPreset filters those rows out and the single-day recent
+  // fetches below supply the real data.
+  const settledUntil = hourly && settledRaw < since ? since : settledRaw;
   const recentDays = [];
   if (hourly) {
     for (let d = addDays(settledUntil, 1); d <= until; d = addDays(d, 1)) recentDays.push(d);

@@ -8,7 +8,7 @@ process.env.FB_PRIMARY_ACCOUNT_ID ||= 'act_1';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { athensDateOfHour, athensWindow, sameDaysAsAthens, sumHourlyRows, offsetMinutes } = await import('../lib/adInsights.js');
+const { athensDateOfHour, athensWindow, sameDaysAsAthens, sumHourlyRows, offsetMinutes, insightsRequest } = await import('../lib/adInsights.js');
 
 const LA = 'America/Los_Angeles';
 const row = (date, hour, extra = {}) => ({
@@ -67,6 +67,16 @@ test('sumHourlyRows splits one LA day across two Athens days', () => {
   assert.equal(metaDaily.length, 1);
   assert.equal(metaDaily[0].date, '2026-11-13');
   assert.equal(metaDaily[0].spend, 35);
+});
+
+test('insightsRequest never builds an inverted settled range (today/yesterday)', () => {
+  // Regression: for `today`, padded since (Athens today - 1) falls after the
+  // settled cutoff (accountToday - 2), which made Meta reject the whole batch.
+  for (const preset of ['today', 'yesterday', 'last_7d']) {
+    const req = insightsRequest('act_1', athensWindow(preset, Date.parse('2026-11-16T08:00:00Z')));
+    const range = JSON.parse(req.params.time_range);
+    assert.ok(range.since <= range.until, `${preset}: inverted range ${range.since}..${range.until}`);
+  }
 });
 
 test('athensWindow presets are Athens calendar windows', () => {
